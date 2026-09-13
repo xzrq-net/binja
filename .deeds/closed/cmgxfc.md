@@ -16,3 +16,5 @@ Package the paid distribution before implementing process control. Follow [Distr
 Build from the supplied ZIP; check interpreter/library resolution and missing-file guidance without disturbing the user's archive. The session task performs the live GUI smoke test. No ambient user-site packages or runtime dependency on `~/src`.
 
 Inspect the current nixpkgs `binaryninja-free` package, and [the experiment](../docs/log.md). The old FHS runner worked after adding libcurl; the separate CLI must not import Binja.
+
+Closed: Built the pinned requireFile archive as an immutable vendor tree and FHS runtime; installed Python CLI help/guide work without a session. Runtime dependency composition includes curl; live launch follows in tbfe3h.

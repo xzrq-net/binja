@@ -5,15 +5,19 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   };
 
-  outputs = {
-    nixpkgs,
-    ...
-  }: let
-    pkgs = import nixpkgs {system = "x86_64-linux";};
+  outputs = {nixpkgs, ...}: let
+    system = "x86_64-linux";
+    pkgs = import nixpkgs { inherit system; config.allowUnfree = true; };
+    binja = pkgs.callPackage ./nix/package.nix {};
   in {
-    devShells.x86_64-linux.default = pkgs.mkShell {
-      packages = [
-      ];
+    packages.${system} = {
+      default = binja;
+      inherit binja;
+      runtime = binja.runtime;
+      vendor = binja.vendor;
+    };
+    devShells.${system}.default = pkgs.mkShell {
+      packages = [ pkgs.python3 binja ];
     };
   };
 }
