@@ -378,3 +378,56 @@ analysis wrappers, per-view close, or richer API lookup. Follow-up deeds `zbqnx2
 `an2dc3`, `32k3q7`, and `t7h2fr` retain those features and depend on the trials.
 The design describes the broader intended interface; deeds define delivery order.
 No runtime implementation was added in this planning change.
+
+## 2026-09-12 — Installed MVP, before the operator UX check
+
+Implemented the pinned Personal Nix package, separate Python CLI, supervised
+private Wayland session, resident Unix RPC receiver, explicit view registry,
+serialized Python execution, offline API search/show, and open/save/stop workflow.
+`README.md` and the single packaged `binja/guide.md` are the usage references.
+Target enumeration/UI dispatch borrow from banteg/bn with its MIT notice retained
+under `licenses/`. The vendor tree and its Python/Sphinx references come directly
+from the supplied archive; there is no dependency on investigation paths or `~/src`.
+
+The installed CLI was exercised from `/tmp` and disposable external workspaces.
+Live version remained 6.0.10601 Personal, with bundled Python 3.13.14 and native
+Wayland. Separate state directories launched independently; repeated start reused
+the verified owner. Missing-license startup failed before GUI launch. License
+injection is a runtime link, Qt writes landed under the selected XDG config, and
+the RPC socket/state permissions were 0600/0700. The live updater flag was false
+and Python user-site loading was disabled. Startup and forced cleanup use retained
+child process objects and a locked supervisor socket, never a PID-file kill.
+
+`tests/smoke.py` provides the repeatable installed-interface verification using
+copied benign inputs, without executing them. The final expanded run passed in
+`/tmp/binja-smoke-mu2x8d2i`. It covered matching offline lookup; two views with the
+same basename; explicit Raw handles; focus changes; queued target retention;
+readiness at execution time; held-analysis refusal/override; queued cancellation;
+pending-work shutdown refusal; fresh scopes; file/line tracebacks; output isolation
+including UI callbacks; output truncation/artifacts; non-JSON result rejection;
+disconnect before acknowledgement; recovery without repeating a mutation; failed
+saves; repeated BNDB saves; stop/restart/reopen; persistent comments; unchanged
+input hashes; GUI close/reopen invalidation; and stale-generation rejection.
+
+The same live suite used reduced retention limits to verify result expiry still
+refuses replay and the finite ID ledger refuses further submissions. It also
+changed discovery metadata to a stale generation and verified that forced stop
+failed without killing the owner. Record/artifact retention is 64 finished
+requests per GUI lifetime, with 4096 deduplication IDs and 64 pending requests.
+Streams retain 1 MiB each; JSON results retain 8 MiB, with artifacts above 16 KiB.
+
+Two runtime observations shaped the implementation: comment edits set
+`analysis_changed` without setting `modified`, so orderly shutdown checks both;
+Raw views remain in InitialState because they have no analysis pipeline. An early
+API-only comment/save/restart/reopen probe passed before the command wrappers were
+added. Self-review also fixed a cancellation race at entry to the readiness gate
+and kept request results nonterminal until captured output was finalized.
+
+No subagents were used. The user requested a working MVP for a personal UX check
+before subagent reviews/trials. Implementation deeds are closed; `2nbgtk` and
+`r2neck` remain open for that checkpoint and the later trials. Desktop/VNC,
+per-view close as a CLI command, convenience analysis commands, richer API lookup,
+and update notices remain deferred. Large-binary analysis/save performance,
+native crashes, modal dialogs, disk-full behavior, and hostile filesystem changes
+have not been comprehensively tested. Recovery is scoped to a live GUI and does
+not make interrupted arbitrary Python transactional.

@@ -26,3 +26,5 @@ Exercise readiness both when a request is submitted and after it has waited in t
 As soon as execution works, prove targeted Python access and a save/reopen round trip with a small API script before expanding command wrappers. This exposes worker/UI and persistence assumptions early.
 
 Reference banteg/bn's `python_exec.py` and transport, borrowing useful small pieces rather than the full operation catalog.
+
+Closed: Live smoke checks pass for serialized Python, fresh scopes, UI callbacks, readiness after queueing, queued cancellation, bounded output/results, source tracebacks, non-JSON errors, disconnect recovery, exact-ID deduplication, expiry tombstones, and submission cap. Early API save/restart/reopen probe passed.

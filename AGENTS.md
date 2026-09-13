@@ -17,3 +17,6 @@ If present, use the `deeds` tool and skill for task tracking.
   `deeds show r2neck --tree` for the MVP graph, and `deeds list` for follow-ups.
 - [Investigation log](docs/log.md) records the 6.0 runtime probes and source
   observations. Scripts under `temp/` are disposable evidence, not the product.
+- The installed MVP is implemented. [README](README.md) and `binja skill` give
+  working commands; `tests/smoke.py` verifies the live workflow from another
+  workspace. The operator's UX check precedes subagent reviews/trials (`2nbgtk`).

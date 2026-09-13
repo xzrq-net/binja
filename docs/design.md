@@ -12,8 +12,9 @@ For unusual inputs such as a dumped Windows executable from Proton, defer loader
 preparation to image formats, preprocessing, the Python API, or manual GUI work
 that produces a prepared BNDB. Do not build a specialized loading workflow yet.
 
-This document defines the intended interface. Command examples are not installed
-commands yet. Deeds milestone `r2neck` defines a smaller usable MVP and initial
+This document defines the intended interface. The installed MVP is described in
+[README](../README.md) and `binja skill`; examples below also include deferred
+commands. Deeds milestone `r2neck` defines a smaller usable MVP and initial
 agent trials; its task graph is authoritative for delivery order. The MVP uses
 private Wayland, targeted Python, minimal API search/show, and explicit database
 save/reopen with request recovery. Help and the packaged guide grow alongside

@@ -5,6 +5,14 @@ blocked-by: [zxazzq, 2ggtpn]
 
 This is the first feedback checkpoint, not final acceptance of every feature in [the design](../docs/design.md). The CLI skeleton supplies `--help` and `skill`; maintain that guide alongside implemented commands before this task starts.
 
+## Operator checkpoint
+
+The user requested: “Once you have the MVP, I'd like to vibe check the UX before
+we proceed with subagent reviews and trials.” The installed MVP and reproducible
+smoke checks are complete. Wait for the operator's UX feedback before spawning
+review or usability agents. Keep this issue and r2neck open until those trials
+and their resulting fixes are complete.
+
 ## Work
 
 - Provide a reproducible smoke workflow using copied benign samples and runtime license injection. Use installed commands from outside the repository.

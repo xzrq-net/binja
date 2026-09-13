@@ -17,3 +17,5 @@ Implement the persistence boundary needed for agent trials. Use readable Python 
 Open two copied binaries, query the intended view, mutate a name/comment through Python, save a BNDB, stop/restart, reopen, and verify persistence and unchanged input bytes. Test failed saves, disconnect during save, stop with unsaved changes/outstanding work, and readiness/override behavior.
 
 Do not add decompile/xrefs, per-view close, navigation, screenshots, or dialog detection here; `zbqnx2` owns those incremental commands. No autosaver or specialized loader workflow.
+
+Closed: Installed open/save/guarded stop workflow passes with two copied binaries, saved comments across restart, failed-save errors, unchanged input hashes, explicit target provenance, and pending/unsaved shutdown refusal. Packaged guide and README describe the usable MVP; operator UX checkpoint precedes trials.

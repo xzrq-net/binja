@@ -9,6 +9,7 @@ import binaryninja as bn
 
 from .common import Error, PROTOCOL, build_config, receive, send
 from .targets import Targets, on_ui
+from .execution import Execution
 
 
 class Bridge:
@@ -16,6 +17,7 @@ class Bridge:
         self.state = Path(os.environ["BINJA_STATE_DIR"])
         self.generation = os.environ["BINJA_GENERATION"]
         self.targets = Targets(self.generation)
+        self.execution = Execution(self, bn)
 
     def dispatch(self, request):
         if request.get("protocol") != PROTOCOL:
@@ -29,11 +31,20 @@ class Bridge:
                 state_dir=str(self.state), docs=config["vendor"] + "/api-docs", python=__import__("sys").version)
             if operation == "status":
                 result["targets"] = on_ui(self.targets.refresh)
+                result["requests"] = [{k: r[k] for k in ("id", "status", "target")} for r in self.execution.list() if r["status"] not in ("completed", "failed", "cancelled")]
             return result
         if operation == "targets":
             return on_ui(self.targets.refresh)
         if operation == "prepare_stop":
-            raise Error("Orderly stop is not implemented yet; use stop --force to explicitly discard this session.")
+            return self.execution.prepare_stop()
+        if operation == "submit":
+            return self.execution.submit(request["spec"])
+        if operation == "request":
+            return self.execution.get(request["id"])
+        if operation == "requests":
+            return self.execution.list()
+        if operation == "cancel":
+            return self.execution.cancel(request["id"])
         raise Error(f"Unknown operation: {operation}")
 
     def handle(self, connection):

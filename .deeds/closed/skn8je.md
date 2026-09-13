@@ -21,3 +21,5 @@ Use two clients and two copied files. Prove independent targeting, GUI tab-switc
 At this first working RPC boundary, run the installed CLI from a separate agent workspace and verify access to its selected socket and packaged API docs. Do not leave this check until final integration.
 
 Reference: banteg/bn's `targets.py` in the existing checkout. Inspect its assumptions rather than treating them as guarantees; preserve notices when copying code.
+
+Closed: Verified resident versioned Unix RPC, two copied files, explicit Raw views, unique/ambiguous path selection, focus-independent targets, and stale handles after GUI close/reopen and process restart. Installed CLI and packaged docs exercised outside this repository.
