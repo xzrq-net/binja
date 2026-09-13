@@ -7,6 +7,11 @@ GUI process. Support Personal licenses, desktop Wayland, and a private composito
 Make the installed Python API discoverable and executable without requiring the
 model to know its current API surface from memory.
 
+Scope this interface to static analysis. Live debugging belongs to other tools.
+For unusual inputs such as a dumped Windows executable from Proton, defer loader
+preparation to image formats, preprocessing, the Python API, or manual GUI work
+that produces a prepared BNDB. Do not build a specialized loading workflow yet.
+
 This document defines the first implementation. Command examples describe the
 intended interface; they are not installed commands yet. Implementation work is
 tracked by deeds milestone `r2neck`. Behavioral evidence and reference revisions
@@ -20,7 +25,7 @@ are in [the investigation log](log.md).
 | CLI | Instance discovery, arguments, submitted scripts, and output formatting |
 | Resident GUI plugin | RPC, target identity, execution scheduling, and request results |
 | Binary Ninja | Live BinaryViews, analysis, edits, and database serialization |
-| Agent skill | Workflow, API lookup, and corrections learned from actual mistakes |
+| CLI-distributed guide | Workflow, API lookup, and corrections learned from actual mistakes |
 
 Use Python for the CLI, plugin, and command scripts. Start with a standard-library
 JSON protocol over a filesystem Unix socket inside the selected state directory.
@@ -48,6 +53,10 @@ supplied 6.0 build when libcurl was added to the old reference environment. Use
 the bundled Python and Qt libraries and declared runtime dependencies; avoid
 global Python installation, user-site package installation, and ambient library
 search paths. The CLI's separate Nix Python environment needs no Binja libraries.
+
+Start scripts with the bundled API and standard library. Add third-party Python
+dependencies only when a concrete workflow needs them, through the composition
+with the GUI interpreter in mind. No general dependency manager is needed now.
 
 Package upgrades are explicit changes to the version/hash and matching API/plugin
 inputs. Disable automatic download/installation. Probe the separate update-check
@@ -118,6 +127,11 @@ human. Display choice is made at startup; moving a live process between composit
 is outside the initial scope. Connecting to an arbitrary pre-existing unmanaged
 GUI is also outside this first lifecycle implementation.
 
+Where the API makes it straightforward, report modal dialogs or other interaction
+requirements through status and command errors. Do not automatically click through
+them. Keep this to inexpensive checks; screenshot/VNC access remains the fallback,
+and the absence of a detected dialog is not proof that the GUI is unblocked.
+
 ## Targets
 
 `binja targets` returns live view handles, full paths, view types, and GUI focus.
@@ -138,6 +152,27 @@ Keep target provenance visible in results. Switching tabs never redirects an
 in-flight request. Retaining a view does not freeze ongoing analysis or a human's
 edits; expose analysis state when relevant. Closing through the CLI must coordinate
 with queued/running operations, and already-closed targets must fail cleanly.
+
+## Analysis readiness and addresses
+
+Default to operating only once analysis is finished. Opening a file waits for
+analysis; target-bound commands, including custom Python, check readiness when
+they execute. An explicit per-request option such as `--allow-incomplete` permits
+partial analysis and makes that choice visible in results. Do not silently fall
+back to partial results when analysis is paused or a client wait expires. Status,
+request inspection, and recovery operations remain available while analysis runs.
+
+This is a readiness gate, not a frozen database snapshot. Edits can trigger new
+analysis; subsequent requests pass through the same gate. A script that mixes
+edits and dependent reads must wait at the relevant points using the API. Keep
+waits off the UI thread and expose the waiting request through status.
+
+Start with Binary Ninja's native address and symbol conventions. Preserve familiar
+representations and add distinctions where ambiguity appears: identify the view,
+distinguish virtual addresses from file offsets, and reject ambiguous symbols.
+Keep integer addresses natural inside Python. CLI output must preserve their exact
+value and meaning, but a universal address schema is unnecessary for the first
+implementation. Refine rendering and input syntax through actual use.
 
 ## RPC and Python execution
 
@@ -161,6 +196,9 @@ PY
 Fresh locals remove dependence on earlier REPL variables; database edits and
 imported module state still persist in the GUI process. There is no general Python
 sandbox or automatic transaction around arbitrary scripts.
+
+Use ordinary undo support where easy for editing commands; do not build a general
+undo framework or promise rollback for arbitrary Python.
 
 Run scripts on a worker and serialize submitted execution initially. Keep status
 requests responsive. Marshal UI access to the main thread and keep long analysis
@@ -192,6 +230,15 @@ changes behind. Saving means an explicit analysis database destination, not sile
 overwriting the input executable. Keep source/target ambiguity and data persistence
 legible to both human and model.
 
+Saving can take minutes. Treat a save as an inspectable request whose result can
+be retrieved after a client disconnect, and report completion only when saving
+succeeds. Expose dirty state and the last successful save observed by this session
+where the API permits; an unknown save history must stay unknown. The initial
+guide should have agents save at meaningful work boundaries and before orderly
+shutdown. Automatic save cadence remains undecided pending real save costs; do
+not introduce an interval autosaver or save after every mutation. Request recovery
+does not recover unsaved changes after a GUI crash.
+
 ```sh
 binja api search "call site"
 binja api members binaryninja.Function
@@ -204,10 +251,18 @@ must work without importing Binary Ninja into the CLI or starting the GUI.
 Supplement static documentation with explicit runtime introspection when needed
 for extension classes. Do not evaluate every property while listing members.
 
-The skill teaches the smallest useful workflow, routes unfamiliar API questions
-to these commands, and accumulates observed mistakes. Install it explicitly in
-the workspace that needs it. Do not globally configure MCP or create another
-hand-maintained copy of the API manual.
+The agent entry point is an ordinary instruction such as `use binja to open this
+binary`. Make `binja --help` point prominently to `binja skill`, which prints a
+concise, skill-level guide shipped with the CLI. Both commands must work without
+a state directory, license, or running GUI. No separate agent-skill installation
+or global MCP configuration is required.
+
+The guide teaches the smallest useful workflow, routes unfamiliar API questions
+to these commands, explains readiness and saving, and accumulates observed
+mistakes. Keep one packaged source for it, rather than another hand-maintained
+API manual. After the initial command set works, use subagents for bounded
+usability trials starting from the ordinary instruction and CLI help; refine the
+guide, command inventory, and output from observed friction.
 
 ## Completion criteria
 
@@ -218,8 +273,12 @@ redirect each other's targets by changing GUI focus or opening another file.
 Long work remains inspectable after a client disconnect. Runtime state and RPC
 sockets stay under the selected directory, with the license supplied at runtime.
 
+As soon as the first RPC works, verify the installed CLI from a separate agent
+workspace can reach the selected socket and locate the packaged API docs. Do not
+defer this foundational check to final integration.
+
 Exercise the same analysis interface in private and desktop Wayland modes and
 verify optional screenshot/VNC access. If the current environment cannot expose
 a desktop socket, record the unverified portion rather than claiming it passed.
 The initial release reports update-check uncertainty honestly, documents its
-limitations, and includes a concise skill and reproducible verification commands.
+limitations, and includes an on-demand guide and reproducible verification commands.

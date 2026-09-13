@@ -339,3 +339,26 @@ once packaging is available.
 AGENTS.md records the commit policy and links the handoff. The initial packaging
 choice is an immutable vendor tree with an FHS runtime, retaining bundled Python
 and Qt. No production launcher, CLI, plugin, or skill has been implemented yet.
+
+## 2026-09-12 — Scope and entry-point refinements
+
+The user confirmed static analysis only. Complex image loading can be prepared
+through preprocessing, the API, or manual GUI work and saved as a BNDB. Commands
+should require completed analysis by default, including custom Python; incomplete
+work needs an explicit override. Address handling should begin with Binja's own
+conventions and remove concrete ambiguities as they arise.
+
+The entry point is now `binja --help` leading to `binja skill`, a guide printed by
+the installed CLI without requiring separate skill installation. The user
+authorized subagent usability trials after the first command set works. The
+initial RPC task now includes an installed-CLI check from another agent workspace.
+
+Undo and GUI interaction checks remain opportunistic. Extra Python capabilities
+are deferred until needed. Save cadence is unresolved because saves can take
+minutes; the first implementation will expose dirty/save status, make slow saves
+inspectable, and guide deliberate saves at meaningful work boundaries. It will not
+introduce an automatic save policy at this stage.
+
+Updated the design and existing task bodies without adding implementation phases.
+Also corrected a truncated archive hash in the packaging task after recomputing
+it from the supplied ZIP; the original investigation log already had the full hash.

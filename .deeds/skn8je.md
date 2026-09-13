@@ -17,4 +17,6 @@ Add a small resident plugin using versioned JSON over `<state>/runtime/rpc.sock`
 
 Use two clients and two copied files. Prove independent targeting, GUI tab-switch independence, duplicate-basename rejection, explicit Raw-view access, stale-handle rejection, and empty-session behavior. Exercise actual GUI integration as well as useful isolated helper tests.
 
+At this first working RPC boundary, run the installed CLI from a separate agent workspace and verify access to its selected socket and packaged API docs. Do not leave this check until final integration.
+
 Reference: banteg/bn's `targets.py` in the existing checkout. Inspect its assumptions rather than treating them as guarantees; preserve notices when copying code.

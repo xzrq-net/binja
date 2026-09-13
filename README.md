@@ -4,6 +4,10 @@ A locally maintained CLI for Binary Ninja, using a managed GUI on desktop
 Wayland or a private compositor. Commands run Python inside the GUI against
 explicit BinaryViews; the initial interface does not use MCP.
 
+The intended agent entry point is `binja --help`, followed by `binja skill` for
+an on-demand workflow guide. Static analysis is the initial scope, and commands
+will wait for completed analysis unless explicitly told otherwise.
+
 The design is complete and implementation is pending. Read
 [the design](docs/design.md), then run `deeds ready`. The full implementation
 graph is available with `deeds show r2neck --tree`.
