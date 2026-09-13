@@ -1,22 +1,19 @@
 ---
-blocked-by: [zxazzq, 2ggtpn, t7h2fr]
+blocked-by: [zxazzq, 2ggtpn]
 ---
-# Ship on-demand agent guidance and verify the complete workflow
+# Verify the MVP and run initial subagent review and usability trials
 
-Finish [Completion criteria](../docs/design.md#completion-criteria).
+This is the first feedback checkpoint, not final acceptance of every feature in [the design](../docs/design.md). The CLI skeleton supplies `--help` and `skill`; maintain that guide alongside implemented commands before this task starts.
 
 ## Work
 
-- Make `binja --help` prominently advertise `binja skill`, which prints a concise guide shipped with the CLI. Both must work without a state directory, license, or GUI. No separate agent-skill installation or global MCP configuration is required.
-- Cover state/targets, lookup before unfamiliar API use, completed-analysis defaults and explicit overrides, Python output, deliberate saves at meaningful boundaries, request recovery, and update notices. Record observed mistakes rather than speculative exhaustive lists.
-- Write README installation/first-session instructions using actual commands. Reconcile the design with delivered behavior and remove obsolete scaffold/documentation claims.
-- Provide a reproducible integration smoke workflow with copied benign samples and runtime license injection.
-- Once the initial command set works, run bounded usability trials with subagents given ordinary requests such as `use binja to open this binary`. Let them discover help, the guide, and API docs without repository design knowledge. Use isolated sample/state directories, observe friction, and revise the small command set and output. The user explicitly authorized this testing; do not expand the whole command surface in advance.
+- Provide a reproducible smoke workflow using copied benign samples and runtime license injection. Use installed commands from outside the repository.
+- Verify private-session startup, matching API lookup, two explicit targets, Python query/mutation, analysis readiness, request recovery after disconnect, database save/reopen across a restart, and orderly shutdown. Check unchanged input bytes, stale/ambiguous targets, independent state directories, and placement of writes/sockets.
+- Run bounded subagent implementation review focused on ownership, target lifetime, UI/worker scheduling, request recovery, and persistence. Assign specific review scopes.
+- Separately run usability agents without repository design context. Use isolated copied samples and state directories. Supply an ordinary task, the sample path, and state/license configuration; let them discover `binja --help`, `binja skill`, and API lookup. Example: inspect a function, annotate it, save a database, then verify the annotation after reopening.
+- Record task completion, wrong turns, errors, and manual interventions. Fix blockers and revise help/guide/output from observed friction. File nonblocking findings against the follow-up deeds rather than expanding the MVP command inventory.
+- Write actual installation and first-session commands in README. Mark delivered behavior and limitations accurately; desktop/VNC and deferred commands are not implied to work.
 
-## Verification
+## Done when
 
-From fresh state: start Personal, find matching docs, open two targets, query/mutate the intended one, recover a request after disconnect, save/reopen a BNDB, and stop cleanly. Check independent state directories, stale handles, and placement of writes/sockets.
-
-Verify private Wayland screenshots and VNC viewing/input. Exercise desktop Wayland if a socket is available; otherwise record the exact missing validation. Run CLI examples outside the implementation repository and verify guide references point to installed commands/docs. Confirm a fresh agent can discover and use the workflow starting from `binja --help` without a preinstalled skill.
-
-Close milestone r2neck when all parts meet their criteria, commit locally, and finalize the completed change with `jj new`.
+The smoke workflow passes and a fresh agent completes the basic task through the installed interface. Record review findings and their disposition, remaining usability friction, and exact unverified portions in the investigation log. Review may validly produce no findings; name its coverage. Close `r2neck` when all MVP parts meet their criteria, commit locally, and finalize with `jj new`.

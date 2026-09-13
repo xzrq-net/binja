@@ -11,8 +11,9 @@ If present, use the `deeds` tool and skill for task tracking.
 
 ## Key inter-session context (maintained by agents)
 
-- [Design](docs/design.md) defines the first CLI/plugin interface. Implementation
-  is tracked by milestone `r2neck`; start with `deeds ready` and use
-  `deeds show r2neck --tree` for the dependency graph.
+- [Design](docs/design.md) defines the intended CLI/plugin interface. Milestone
+  `r2neck` gates a usable MVP and initial subagent trials; convenience commands
+  and display extras follow those trials. Start with `deeds ready`, use
+  `deeds show r2neck --tree` for the MVP graph, and `deeds list` for follow-ups.
 - [Investigation log](docs/log.md) records the 6.0 runtime probes and source
   observations. Scripts under `temp/` are disposable evidence, not the product.

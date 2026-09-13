@@ -9,6 +9,7 @@ Package the paid distribution before implementing process control. Follow [Distr
 - Start with an immutable vendor tree plus `buildFHSEnv`. Preserve modes/symlinks and bundled Python/Qt; declare libcurl and remaining libraries. Give the low-level launcher a name distinct from the future `binja` CLI and remove working-directory dependence.
 - Expose bundled API docs/source. Additional public API source should match `stable/6.0.10601` (`2ddf304b3275aa184e95570404539cbc4beb64c6`).
 - Establish the Python CLI development/package skeleton; replace unused Rust scaffold as appropriate. Keep licenses/credentials outside the store and paid artifacts out of public caches.
+- Ship `binja --help` pointing to `binja skill` from the CLI skeleton. Both work without state, license, or GUI. Begin with a short guide that labels unimplemented workflow steps; each implementation task updates this single packaged source as commands land.
 
 ## Verification and references
 

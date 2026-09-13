@@ -1,5 +1,5 @@
 ---
-blocked-by: [mpsj67]
+blocked-by: [2nbgtk]
 ---
 # Report available Binary Ninja updates without installing them
 
@@ -16,4 +16,4 @@ User request: “I'm going to forget to upgrade. If there is a convenient opport
 
 Establish which calls contact the network and leave the immutable installation untouched. Exercise cached available/current/unknown states and offline failure without delaying analysis. Do not invent a newer release to demonstrate output.
 
-The experiment found the auto-update flag true while network update checks were disabled; handle those controls separately. The skill task 2nbgtk teaches the model to relay useful notices.
+The experiment found the auto-update flag true while network update checks were disabled; handle those controls separately. Update the packaged guide to relay useful notices when this feature lands. Update notices do not gate the MVP trials; disabling automatic download/installation remains part of initial session management.

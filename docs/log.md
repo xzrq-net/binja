@@ -362,3 +362,19 @@ introduce an automatic save policy at this stage.
 Updated the design and existing task bodies without adding implementation phases.
 Also corrected a truncated archive hash in the packaging task after recomputing
 it from the supplied ZIP; the original investigation log already had the full hash.
+
+## 2026-09-12 — Usability-first implementation order
+
+The user requested an earlier usability-test MVP, with subcommands added
+incrementally afterward. Milestone `r2neck` now ends at a verified private-session
+Python/save workflow and bounded subagent implementation review and usability
+trials. Help and the packaged guide begin in the CLI skeleton and evolve with
+implemented commands. API lookup initially provides search/show; execution keeps
+explicit targets, readiness, and recoverable request IDs. The first live execution
+also probes save/reopen before convenience wrappers expand.
+
+The trials no longer depend on update notices, desktop/VNC, UI commands, common
+analysis wrappers, per-view close, or richer API lookup. Follow-up deeds `zbqnx2`,
+`an2dc3`, `32k3q7`, and `t7h2fr` retain those features and depend on the trials.
+The design describes the broader intended interface; deeds define delivery order.
+No runtime implementation was added in this planning change.

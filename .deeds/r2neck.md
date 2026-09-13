@@ -2,18 +2,20 @@
 blocked-by: [2nbgtk]
 tier: objective
 ---
-# Deliver the first managed Binary Ninja CLI workflow
+# Deliver a usable Binary Ninja MVP and run initial agent trials
 
-User goal: “package and wrap Binary Ninja for agentic use.” The accepted interface is a locally maintained CLI, a small Python receiver inside the Personal-edition GUI, and an RPC socket under the state directory. Borrow from banteg/bn without depending on its release process. Support desktop and private Wayland displays, discover the installed API, and omit MCP initially.
+User goal: “package and wrap Binary Ninja for agentic use.” Immediate priority: “redo the deeds to have a usability test MVP sooner”; subcommands can be implemented incrementally at the tail.
 
-[The design](../docs/design.md) is the implementation contract. Use `deeds ready` and `deeds show r2neck --tree`. Parts are intended as local commit boundaries; agents commit and finish completed jj changes with `jj new`.
+Use a locally maintained Python CLI and a small receiver in the pinned Personal GUI, with RPC under an explicitly selected state directory. Borrow from banteg/bn with attribution; no MCP. Start with private Wayland, explicit BinaryViews, completed-analysis defaults, arbitrary Python, matching API lookup, and deliberate database saving.
 
-User refinements: “static analysis only”; “default posture is to only operate once analysis is finished”; “start with binary ninja's natural representations”; and “binja --help” leading to “binja skill”. Specialized loading and extra Python capabilities are deferred. Undo is opportunistic, save cadence remains open because saves can take minutes, and GUI interaction checks should stay inexpensive. Subagent usability trials are authorized once the initial command set works.
-
-The final guide/integration task gates this milestone; its dependencies cover all eight implementation parts.
+[The design](../docs/design.md) describes the intended interface. This graph defines delivery order and the MVP boundary. Use `deeds ready` and `deeds show r2neck --tree`. Parts are local commit boundaries; commit completed work and finish with `jj new`.
 
 ## Done when
 
-A fresh workspace discovers the guide through `binja --help` and `binja skill`, starts the pinned Personal build, discovers its API, opens a copied sample, queries/modifies an explicitly selected view, saves/reopens the database, and shuts down without silently discarding unsaved work. Independent clients cannot redirect each other's targets. Analysis must be ready unless explicitly overridden. The guide explains the verified workflow and limitations.
+The installed CLI works from a separate workspace: discover `skill` through `--help`, start a managed private session, find matching API docs, open two copied samples, inspect and modify the intended view through Python, save a BNDB, stop/restart, reopen, and observe the saved change. Targets cannot be redirected by another client or GUI focus. Analysis readiness, stale/ambiguous target errors, recoverable requests, and refusal to silently discard unsaved work are verified.
 
-All parts below must be completed. Missing desktop-socket access must be recorded as unverified, not treated as a passing desktop test. Investigation scripts are evidence, not an implementation to install wholesale.
+Run bounded adversarial subagent review and usability trials at this checkpoint, fix blockers to this workflow, and record observed friction and unverified behavior. Investigation scripts are evidence, not an implementation to install wholesale.
+
+## After the MVP
+
+These remain intended work but do not gate this milestone: convenience commands (`zbqnx2`), desktop and visual access (`an2dc3`), richer API lookup (`32k3q7`), and optional update notices (`t7h2fr`). They depend on the initial trials so observations can guide implementation. Static analysis only; specialized loaders, extra Python dependencies, generalized undo, and automatic save cadence remain outside this implementation.

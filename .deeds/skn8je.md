@@ -8,6 +8,7 @@ Add a small resident plugin using versioned JSON over `<state>/runtime/rpc.sock`
 ## Work
 
 - Publish generation ID, Binja/protocol versions, and documentation locations; add a live readiness handshake to CLI status.
+- Populate the private session through a small GUI test harness to probe open and close/reopen behavior now. Product `open` follows in zxazzq using the execution layer; do not add a temporary second command transport.
 - Enumerate tabs/view frames on the main thread. Expose handles, full paths, view types, and GUI focus.
 - Resolve handles or unambiguous paths/names. Infer one eligible analysis view, suppressing redundant Raw views only for inference; require an explicit target otherwise.
 - Treat `active` as a deliberate snapshot of focus. Retain accepted views and invalidate handles after close/reopen/restart. Never maintain a shared selected view.

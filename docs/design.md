@@ -12,10 +12,15 @@ For unusual inputs such as a dumped Windows executable from Proton, defer loader
 preparation to image formats, preprocessing, the Python API, or manual GUI work
 that produces a prepared BNDB. Do not build a specialized loading workflow yet.
 
-This document defines the first implementation. Command examples describe the
-intended interface; they are not installed commands yet. Implementation work is
-tracked by deeds milestone `r2neck`. Behavioral evidence and reference revisions
-are in [the investigation log](log.md).
+This document defines the intended interface. Command examples are not installed
+commands yet. Deeds milestone `r2neck` defines a smaller usable MVP and initial
+agent trials; its task graph is authoritative for delivery order. The MVP uses
+private Wayland, targeted Python, minimal API search/show, and explicit database
+save/reopen with request recovery. Help and the packaged guide grow alongside
+implementation. Convenience subcommands, richer API lookup, desktop/visual access,
+and update notices follow the first trials. The completion criteria below describe
+the broader interface, not prerequisites for starting usability tests. Behavioral
+evidence and reference revisions are in [the investigation log](log.md).
 
 ## Architecture and ownership
 
