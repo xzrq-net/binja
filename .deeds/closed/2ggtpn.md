@@ -15,3 +15,5 @@ Make unfamiliar Python API use practical before agent trials. Use bundled Sphinx
 ## Verification
 
 Retrieve `BinaryView.get_functions_containing`, search for a relevant API, and test missing/ambiguous lookups. Verify no GUI starts, reported version matches the package, and installed paths work outside this repository. Test lookup behavior, not snapshots of an entire release.
+
+Closed: Built a static declaration/docstring index from the pinned vendor source, exposed matching Sphinx paths, and verified search/show without a session. Installed lookup works outside the repository.

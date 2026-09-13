@@ -47,9 +47,11 @@ in stdenvNoCC.mkDerivation {
     cat > $out/lib/binja/build.json <<EOF
     {"version":"${version}","vendor":"${vendor}","runtime":"${runtime}/bin/binja-runtime","labwc":"${pkgs.labwc}/bin/labwc"}
     EOF
+    PYTHONPATH=$out/lib ${python3}/bin/python3 -P -m binja.api \
+      ${vendor}/python/binaryninja $out/lib/binja/api-index.json
     makeWrapper ${python3}/bin/python3 $out/bin/binja \
       --set PYTHONPATH $out/lib --set PYTHONNOUSERSITE 1 \
-      --add-flags '-m binja'
+      --add-flags '-P -m binja'
   '';
   passthru = { inherit vendor runtime; };
   preferLocalBuild = true;

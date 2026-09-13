@@ -17,3 +17,5 @@ Implement [State and session lifecycle](../docs/design.md#state-and-session-life
 Launch packaged Personal and confirm version/bundled Python. Test failed-start cleanup, duplicate ownership, and independent state directories. Check application/Qt writes land in state and the installation remains unchanged. No silent X11 fallback.
 
 Avoid fixed VNC sockets and relative installation assumptions. Keep smoke inputs disposable and forced cleanup distinct from saving work.
+
+Closed: Live packaged Personal GUI runs on private native Wayland with bundled Python. Verified separate state directories, duplicate reuse, missing-license failure, runtime license link, private socket modes, and owned forced cleanup. Graceful persistence guard follows in zxazzq.
