@@ -54,7 +54,7 @@ def start(state, license_path):
         except Error as exc:
             last_error = str(exc)
         time.sleep(0.2)
-    raise Error(f"Startup wait expired: {last_error}. Use status or stop --force to recover.")
+    raise Error(f"Startup wait timed out: {last_error}; use status or stop --force to recover.")
 
 
 def stop(state, force=False):

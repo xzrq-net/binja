@@ -156,7 +156,7 @@ result = bv.file.filename
             connection.sendall(json.dumps(wire).encode() + b"\n")
             assert json.loads(connection.makefile("rb").readline())["data"]["result"] == "once"
         assert py("result = bv.get_comment_at(bv.entry_point)", a)["result"] == "once"
-        assert "different content" in py("result = 0", a, request_id=request_id, code=1)["error"]
+        assert py("result = 0", a, request_id=request_id) == cli("request", request_id)
 
         phase("Database save failures, orderly shutdown guard, and restart persistence")
         assert "Unsaved" in cli("stop", code=1)["error"]
@@ -184,7 +184,7 @@ result = bv.file.filename
         assert (state.stat().st_mode & 0o777) == 0o700
         assert ((state / "runtime/rpc.sock").stat().st_mode & 0o777) == 0o600
 
-        phase("GUI close/reopen invalidation and result expiry without replay")
+        phase("GUI close/reopen invalidation and output pruning without replay")
         py("import binaryninjaui as ui\ndef close():\n    for context in ui.UIContext.allContexts():\n        for tab in list(context.getTabs()):\n            context.closeTab(tab)\non_ui(close)", no_target=True)
         assert cli("targets") == []
         reopened_again = cli("open", database)["result"]["handle"]
@@ -192,22 +192,43 @@ result = bv.file.filename
         assert "No live target" in py("result = 0", reopened, code=1)["error"]
         runtime = py("import os; result = {'updates': bn.update.are_auto_updates_enabled(), 'qt': os.environ['QT_QPA_PLATFORM'], 'user_site': __import__('site').ENABLE_USER_SITE}", reopened_again)["result"]
         assert runtime == {"updates": False, "qt": "wayland", "user_site": False}
-        # Use a smaller result limit to exercise expiry quickly.
+        # Use a smaller result limit to exercise pruning quickly.
         py("import binja.execution as execution; execution.KEEP_RESULTS = 2", no_target=True)
-        old = py("result = 123", reopened_again)
-        py("result = 456", reopened_again)
-        py("result = 789", reopened_again)
-        assert cli("request", old["id"], code=1)["status"] == "expired"
-        assert py("result = 123", reopened_again, request_id=old["id"], code=1)["status"] == "expired"
+        old = py("import sys; print('old output'); print('old error output', file=sys.stderr); result = 123", reopened_again)
+        old_failed = py("raise ValueError('retained error')", reopened_again, code=1)
+        old_large = py("print('x' * 20000); result = list(range(10000))", reopened_again)
+        recent = [py("result = 456", reopened_again), py("result = 789", reopened_again)]
+        for record, code in ((old, 0), (old_failed, 1), (old_large, 0)):
+            metadata = {k: v for k, v in record.items()
+                if k not in ("stdout", "stderr", "result", "result_artifact", "result_bytes")}
+            metadata["output_pruned"] = True
+            assert cli("request", record["id"], "--wait", "5", code=code) == metadata
+            assert not (state / "artifacts" / record["id"]).exists()
+            assert py("raise AssertionError('must not replay')", reopened, request_id=record["id"], code=code) == metadata
+        for record in recent:
+            assert cli("request", record["id"]) == record
+        assert {path.name for path in (state / "artifacts").iterdir()} == {r["id"] for r in recent}
+        retained_old = cli("request", old["id"])
+        for command, path in (("open", sample_a), ("save", database)):
+            for record, expected in ((old, "Output pruned."), (recent[-1], "789")):
+                rendered = subprocess.check_output([binary, command, str(path), "--request-id", record["id"]],
+                    cwd=workspace, env=env, text=True, stderr=subprocess.PIPE, timeout=90)
+                assert record["id"] + " completed" in rendered and expected in rendered
 
         phase("Saving after a long request history")
         py("bv.set_comment_at(bv.entry_point, 'saved after long request history')", reopened_again)
-        # Seed old fingerprints instead of issuing thousands of RPC calls.
-        py("""history = {f"{bridge.generation}:rhistory{i}": "0" * 64 for i in range(4096)}
-bridge.execution.fingerprints.update(history)
+        # Seed old metadata instead of issuing thousands of RPC calls.
+        py("""history = {}
+for i in range(4096):
+    request_id = f"{bridge.generation}:rhistory{i}"
+    history[request_id] = dict(id=request_id, status="completed", target=None,
+        submitted=0, started=0, finished=0, output_pruned=True)
+with bridge.execution.lock:
+    bridge.execution.records.update(history)
 """, no_target=True)
         cli("save", database, "--target", reopened_again)
-        assert py("result = 123", reopened_again, request_id=old["id"], code=1)["status"] == "expired"
+        assert py("result = 0", reopened_again, request_id=old["id"]) == retained_old
+        assert cli("request", restarted["generation"] + ":rhistory4095")["status"] == "completed"
 
         phase("Live ownership verification rejects stale metadata")
         metadata_path = state / "runtime/instance.json"

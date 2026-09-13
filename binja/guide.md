@@ -111,21 +111,21 @@ binja cancel QUEUED_REQUEST_ID
 
 Replace the placeholders with returned IDs. `--no-wait` returns submission status
 immediately. `--json` puts one JSON result on stdout and a JSON submission receipt
-on stderr. Failed, cancelled, or expired requests exit 1. Status and request
+on stderr. Failed or cancelled requests exit 1. Status and request
 inspection remain available during worker execution.
 
 After a disconnect, inspect the printed ID. An unknown ID does not prove the script
-never ran. Reusing `--request-id` with exactly the same submission returns the
-original request; conflicting reuse fails. Do not automatically repeat mutations.
+never ran. Reusing `--request-id` returns the original request without executing
+again. Do not automatically repeat mutations.
 Cancellation applies to queued requests and pre-script analysis waits; running
 Python/native work cannot safely be interrupted.
 
-The newest 64 finished requests retain results and artifacts until the session
-ends. Each output stream retains up to 1 MiB, with a truncation flag; JSON results
-have an 8 MiB limit. Outputs above 16 KiB are returned as artifact paths. Read those
-files to consume the output, and copy them elsewhere to retain them. Deduplication
-records survive result expiry and grow with accepted requests until the session
-restarts. There is no lifetime request-count limit.
+Request metadata (ID, status, target, timestamps, and truncated error/traceback)
+stays available for the session. Only the newest 64 finished requests retain
+outputs and artifacts; older records have `output_pruned: true` and no output
+fields. Each output stream retains up to 1 MiB, with a truncation flag; JSON
+results have an 8 MiB limit. Outputs above 16 KiB are returned as artifact paths.
+Read those files to consume the output, and copy them elsewhere to retain them.
 
 Scripts have the user's filesystem access. Errors, timeouts, and forced stops do
 not roll back edits or external writes. Request recovery works within the running

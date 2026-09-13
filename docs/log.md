@@ -547,3 +547,33 @@ management. Keep operation ownership distinct from thread placement; plugin-leve
 serialization alone cannot promise exclusive access against independent GUI/plugin
 writers. Interactive GUI coordination needs an explicit policy before desktop
 support. No implementation changes or subagent trials were performed.
+
+## 2026-09-13 — Simplify request bookkeeping
+
+The user asked for a second opinion on the request system and its former
+4096-entry ID ledger. Assessment: Binary Ninja locks per API call and offers no
+isolation above that (no transactions, interleaved undo actions, `create_database`
+lock warnings), so a script is the unit of intent and one serial worker per
+session is the right scale. Parallel work belongs in separate state directories.
+Script-level concurrency inside a session would buy little (shared GIL, analysis
+already parallel in the native worker pool) and cost nondeterministic
+interleaving of mutations.
+
+Under that model the content fingerprints, the "expired" status, and the separate
+ID dictionary carried no guarantee a plain record dictionary does not. GPT
+(Codex, xhigh effort, via ception) removed them per `vtw63f`: terminal records now
+keep id, status, target, timestamps, and truncated error text for the GUI
+lifetime, and only the newest 64 finished requests keep outputs and artifact
+directories. Pruned records carry `output_pruned: true`. Duplicate IDs return the
+existing record before target resolution, so reuse against a dead handle still
+returns the original outcome. The `open`/`save` renderers no longer assume a
+reused ID belongs to the same command. Queue depth and the pending cap are
+unchanged; `t87ez9` defers that choice until agent usage is observed.
+
+`nix build`, Python compilation, and the live smoke suite passed in GPT's run
+(`/tmp/binja-smoke-4knpkb0g`) and in an independent rerun after review. The
+suite now checks retained metadata for completed, failed, and large-output
+requests, artifact deletion, reuse without replay, save after 4096 historical
+records, and rendering of pruned records. Review found no divergence from
+intent; one instruction was followed literally (a startup error message was
+reworded to make a grep clean), which is harmless.

@@ -138,11 +138,11 @@ script execution and its synchronous UI callbacks. Large output is returned thro
 artifact paths. Serialization failures are explicit errors; they do not roll back
 the script. The guide documents size and retention limits.
 
-Request IDs belong to a GUI lifetime. The client emits an ID before submission
-and can retrieve the same execution after a disconnect or wait timeout. Duplicate
-IDs return the original request only when submission content matches. Conflicting
-reuse fails, and expired results do not permit re-execution. A restarted session
-cannot establish an earlier script's outcome.
+Request IDs belong to a GUI lifetime. The client emits IDs before submission
+for recovery after a disconnect or timeout. Duplicate IDs return the original
+record without replay. Metadata stays for the session; only the newest 64
+finished requests retain outputs and artifacts. Older records have
+`output_pruned: true`. A restart cannot establish an earlier outcome.
 
 Cancellation can stop queued work or a pre-script analysis wait. It cannot safely
 interrupt running Python or native calls. Scripts are neither sandboxed nor

@@ -1,7 +1,6 @@
 """Serialized scripts, per-thread output capture, and generation-local recovery."""
 from collections import OrderedDict
 from contextlib import contextmanager
-import hashlib
 import json
 from pathlib import Path
 import queue
@@ -83,7 +82,6 @@ class Execution:
         self.bn = bn
         self.lock = threading.RLock()
         self.records = OrderedDict()
-        self.fingerprints = {}
         self.work = queue.Queue()
         self.stopping = False
         self.stdout = ThreadOutput(sys.stdout)
@@ -106,8 +104,6 @@ class Execution:
         with self.lock:
             if request_id in self.records:
                 return self.snapshot(self.records[request_id])
-            if request_id in self.fingerprints:
-                return {"id": request_id, "status": "expired", "error": "Result expired; this ID cannot execute again."}
         raise Error("Unknown request ID; this is not proof that a submitted mutation ran or did not run. Do not blindly resubmit.")
 
     def list(self):
@@ -120,13 +116,11 @@ class Execution:
         self.validate_id(request_id)
         if not isinstance(spec.get("source"), str) or not isinstance(spec.get("filename"), str):
             raise Error("Execution requires source text and a filename.")
-        fingerprint = hashlib.sha256(json.dumps(spec, sort_keys=True, allow_nan=False).encode()).hexdigest()
 
         def check_duplicate():
-            if request_id in self.fingerprints:
-                if self.fingerprints[request_id] != fingerprint:
-                    raise Error("Request ID already used with different content.")
-                return self.get(request_id)
+            record = self.records.get(request_id)
+            if record is not None:
+                return self.snapshot(record)
             if self.stopping:
                 raise Error("Session is shutting down; no more submissions accepted.")
             if sum(r["status"] not in TERMINAL for r in self.records.values()) >= MAX_PENDING:
@@ -146,7 +140,6 @@ class Execution:
                 allow_incomplete=bool(spec.get("allow_incomplete", False)), submitted=time.time(),
                 _spec=spec, _bv=bv)
             self.records[request_id] = record
-            self.fingerprints[request_id] = fingerprint
             self.work.put(record)
             return self.snapshot(record)
 
@@ -274,7 +267,11 @@ class Execution:
                     record.pop("_bv", None)
                     record.pop("_spec", None)
             with self.lock:
-                finished = [key for key, item in self.records.items() if item["status"] in TERMINAL]
+                finished = [key for key, item in self.records.items()
+                    if item["status"] in TERMINAL and not item.get("output_pruned")]
                 for key in finished[:-KEEP_RESULTS]:
-                    del self.records[key]
+                    item = self.records[key]
+                    for field in ("stdout", "stderr", "result", "result_artifact", "result_bytes"):
+                        item.pop(field, None)
+                    item["output_pruned"] = True
                     shutil.rmtree(self.bridge.state / "artifacts" / key, ignore_errors=True)

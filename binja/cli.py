@@ -24,7 +24,7 @@ def execution_options(parser):
 
 def wait_for(state, record, seconds):
     deadline = time.monotonic() + seconds
-    while record["status"] not in ("completed", "failed", "cancelled", "expired") and time.monotonic() < deadline:
+    while record["status"] not in ("completed", "failed", "cancelled") and time.monotonic() < deadline:
         time.sleep(min(0.2, max(0, deadline - time.monotonic())))
         record = rpc(state, "request", id=record["id"])
     return record
@@ -61,13 +61,15 @@ def render(value, command, as_json, state):
                 print(f"{stream}: {output['artifact']}")
             if output.get("truncated"):
                 print(f"{stream}: truncated at 1 MiB")
-        if command == "open" and value.get("status") == "completed":
-            opened = value["result"]
-            print(f"Opened {opened['path']}\nAnalysis: {opened['analysis']}")
-        elif command == "save" and value.get("status") == "completed":
-            print(f"Saved {value['result']['saved']['path']}")
-        elif value.get("result") is not None:
-            print(json.dumps(value["result"], indent=2))
+        result = value.get("result")
+        if value.get("output_pruned"):
+            print("Output pruned.")
+        elif command == "open" and isinstance(result, dict) and "path" in result and "analysis" in result:
+            print(f"Opened {result['path']}\nAnalysis: {result['analysis']}")
+        elif command == "save" and isinstance(result, dict) and isinstance(result.get("saved"), dict) and "path" in result["saved"]:
+            print(f"Saved {result['saved']['path']}")
+        elif result is not None:
+            print(json.dumps(result, indent=2))
         if value.get("result_artifact"):
             print(f"Result: {value['result_artifact']} ({value['result_bytes']} bytes)")
         if value.get("error"):
@@ -197,7 +199,7 @@ def main():
         else:
             value = rpc(state, args.command)
         render(value, args.command, args.json, state)
-        if isinstance(value, dict) and value.get("status") in ("failed", "cancelled", "expired"):
+        if isinstance(value, dict) and value.get("status") in ("failed", "cancelled"):
             sys.exit(1)
         if isinstance(value, dict) and value.get("status") in ("running", "waiting_analysis", "queued") and not getattr(args, "no_wait", False):
             sys.exit(2)
