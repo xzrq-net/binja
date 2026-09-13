@@ -184,7 +184,7 @@ result = bv.file.filename
         assert (state.stat().st_mode & 0o777) == 0o700
         assert ((state / "runtime/rpc.sock").stat().st_mode & 0o777) == 0o600
 
-        phase("GUI close/reopen invalidation and bounded deduplication retention")
+        phase("GUI close/reopen invalidation and result expiry without replay")
         py("import binaryninjaui as ui\ndef close():\n    for context in ui.UIContext.allContexts():\n        for tab in list(context.getTabs()):\n            context.closeTab(tab)\non_ui(close)", no_target=True)
         assert cli("targets") == []
         reopened_again = cli("open", database)["result"]["handle"]
@@ -192,15 +192,22 @@ result = bv.file.filename
         assert "No live target" in py("result = 0", reopened, code=1)["error"]
         runtime = py("import os; result = {'updates': bn.update.are_auto_updates_enabled(), 'qt': os.environ['QT_QPA_PLATFORM'], 'user_site': __import__('site').ENABLE_USER_SITE}", reopened_again)["result"]
         assert runtime == {"updates": False, "qt": "wayland", "user_site": False}
-        # Use smaller limits to exercise the same retention boundary quickly.
+        # Use a smaller result limit to exercise expiry quickly.
         py("import binja.execution as execution; execution.KEEP_RESULTS = 2", no_target=True)
         old = py("result = 123", reopened_again)
         py("result = 456", reopened_again)
         py("result = 789", reopened_again)
         assert cli("request", old["id"], code=1)["status"] == "expired"
         assert py("result = 123", reopened_again, request_id=old["id"], code=1)["status"] == "expired"
-        py("import binja.execution as execution; execution.MAX_IDS = len(bridge.execution.fingerprints)", no_target=True)
-        assert "limit reached" in py("result = 0", reopened_again, code=1)["error"]
+
+        phase("Saving after a long request history")
+        py("bv.set_comment_at(bv.entry_point, 'saved after long request history')", reopened_again)
+        # Seed old fingerprints instead of issuing thousands of RPC calls.
+        py("""history = {f"{bridge.generation}:rhistory{i}": "0" * 64 for i in range(4096)}
+bridge.execution.fingerprints.update(history)
+""", no_target=True)
+        cli("save", database, "--target", reopened_again)
+        assert py("result = 123", reopened_again, request_id=old["id"], code=1)["status"] == "expired"
 
         phase("Live ownership verification rejects stale metadata")
         metadata_path = state / "runtime/instance.json"
@@ -213,6 +220,13 @@ result = bv.file.filename
         finally:
             metadata_path.write_text(metadata)
         assert cli("status")["generation"] == restarted["generation"]
+        cli("stop")
+        started = False
+
+        cli("start", "--license", options.license)
+        started = True
+        final_view = cli("open", database)["result"]["handle"]
+        assert py("result = bv.get_comment_at(bv.entry_point)", final_view)["result"] == "saved after long request history"
         cli("stop")
         started = False
         phase(f"PASS — installed MVP workflow and failure checks; evidence: {workspace}")

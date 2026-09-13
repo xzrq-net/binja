@@ -463,3 +463,19 @@ the guide now says to save and restart before reaching the limit. Broader review
 of concurrency, crash recovery, and persistence failure modes remains pending.
 No subagents were used. The user explicitly kept review/usability trials gated
 while this preliminary pass is under review; `2nbgtk` and `r2neck` remain open.
+
+## 2026-09-13 — Remove the lifetime request cap
+
+Removed `MAX_IDS` instead of increasing it to a nominal integer maximum. It
+bounded the deduplication dictionary, not an ID counter. A lifetime request cap
+could prevent saving a dirty database. Fingerprints now grow with accepted
+requests until restart, while pending requests and retained full results remain
+bounded at 64 each. Expired IDs still cannot replay. The guide reflects the memory
+tradeoff without prescribing periodic restarts.
+
+The smoke check seeds more than 4096 historical IDs, saves a dirty target, checks
+that an expired request still cannot replay, and verifies the saved annotation
+after normal shutdown and restart.
+
+`nix build`, Python compilation, and the live smoke suite passed; live evidence
+is in `/tmp/binja-smoke-jemuwrj_`. No subagents were used.

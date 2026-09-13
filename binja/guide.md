@@ -124,8 +124,8 @@ The newest 64 finished requests retain results and artifacts until the session
 ends. Each output stream retains up to 1 MiB, with a truncation flag; JSON results
 have an 8 MiB limit. Outputs above 16 KiB are returned as artifact paths. Read those
 files to consume the output, and copy them elsewhere to retain them. Deduplication
-records survive result expiry. A session accepts at most 4096 distinct execution
-requests, including saves; save periodically and restart before reaching that limit.
+records survive result expiry and grow with accepted requests until the session
+restarts. There is no lifetime request-count limit.
 
 Scripts have the user's filesystem access. Errors, timeouts, and forced stops do
 not roll back edits or external writes. Request recovery works within the running

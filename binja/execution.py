@@ -15,7 +15,6 @@ import traceback
 from .common import Error
 from .targets import on_ui
 
-MAX_IDS = 4096
 KEEP_RESULTS = 64
 MAX_PENDING = 64
 OUTPUT_BYTES = 1024 * 1024
@@ -130,8 +129,6 @@ class Execution:
                 return self.get(request_id)
             if self.stopping:
                 raise Error("Session is shutting down; no more submissions accepted.")
-            if len(self.fingerprints) >= MAX_IDS:
-                raise Error("Session request-ID limit reached (4096). Save work and restart.")
             if sum(r["status"] not in TERMINAL for r in self.records.values()) >= MAX_PENDING:
                 raise Error("Execution queue is full (64 requests). Inspect requests before submitting more work.")
             return None
