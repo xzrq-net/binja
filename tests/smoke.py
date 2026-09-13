@@ -24,8 +24,8 @@ def main():
     options = parser.parse_args()
     binary = str(options.binja.resolve())
     workspace = Path(tempfile.mkdtemp(prefix="binja-smoke-"))
-    state = workspace / "state"
-    env = dict(os.environ, BINJA_STATE_DIR=str(state))
+    state = workspace / ".binja"
+    env = os.environ.copy()
     env.pop("PYTHONPATH", None)
     sample_a, sample_b = workspace / "a/sample", workspace / "b/sample"
     for sample in (sample_a, sample_b):
@@ -62,7 +62,8 @@ def main():
         assert "skill" in help_output
         assert "binja api" in subprocess.check_output([binary, "skill"], cwd=workspace, env=env, text=True)
         symbol = cli("api", "show", "BinaryView.get_functions_containing")
-        assert symbol["version"] == "6.0.10601" and Path(symbol["source"]).is_file()
+        assert symbol["version"] == cli("api", "paths")["version"]
+        assert Path(symbol["source"]).is_file()
         assert cli("api", "search", "call site")["total"] > 0
         assert "No static" in cli("api", "show", "does_not_exist", code=1)["error"]
         assert "Ambiguous" in cli("api", "show", "name", code=1)["error"]
@@ -71,6 +72,10 @@ def main():
         phase("Private session ownership and target inference")
         session = cli("start", "--license", options.license)
         started = True
+        assert session["state_dir"] == str(state)
+        assert session["version"].split()[0] == symbol["version"]
+        assert cli("--state-dir", state, "status")["generation"] == session["generation"]
+        assert py("import os; result = os.getcwd()", no_target=True)["result"] == str(workspace)
         assert cli("start")["generation"] == session["generation"]
         assert cli("targets") == []
         assert "No live target" in py("result = bv", code=1)["error"]

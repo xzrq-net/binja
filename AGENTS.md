@@ -9,14 +9,14 @@ If present, use the `deeds` tool and skill for task tracking.
 - This is a vibe-coded project. Agents make local commits at task or phase
   boundaries. With colocated jj, finish a completed change with `jj new`.
 
-## Key inter-session context (maintained by agents)
+## Project references (maintained by agents)
 
-- [Design](docs/design.md) defines the intended CLI/plugin interface. Milestone
-  `r2neck` gates a usable MVP and initial subagent trials; convenience commands
-  and display extras follow those trials. Start with `deeds ready`, use
-  `deeds show r2neck --tree` for the MVP graph, and `deeds list` for follow-ups.
-- [Investigation log](docs/log.md) records the 6.0 runtime probes and source
-  observations. Scripts under `temp/` are disposable evidence, not the product.
-- The installed MVP is implemented. [README](README.md) and `binja skill` give
-  working commands; `tests/smoke.py` verifies the live workflow from another
-  workspace. The operator's UX check precedes subagent reviews/trials (`2nbgtk`).
+- Start with `deeds ready`; use `deeds show ID --tree` for dependencies and
+  `deeds list` for follow-ups. Approval checkpoints belong in the relevant issue.
+- [README](README.md) covers installation. `binja skill` prints the workflow from
+  `binja/guide.md`; keep that single packaged source current with CLI changes.
+- [Design](docs/design.md) describes architecture and interface constraints.
+  [Investigation log](docs/log.md) holds historical observations and verification
+  results. Keep session history and milestone status out of reference docs.
+- `tests/smoke.py` checks the installed CLI from a disposable external workspace.
+  Scripts under `temp/` are disposable evidence.

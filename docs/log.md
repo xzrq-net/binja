@@ -431,3 +431,35 @@ and update notices remain deferred. Large-binary analysis/save performance,
 native crashes, modal dialogs, disk-full behavior, and hostile filesystem changes
 have not been comprehensively tested. Recovery is scoped to a live GUI and does
 not make interrupted arbitrary Python transactional.
+
+## 2026-09-13 — Preliminary documentation and session ergonomics review
+
+Reviewed README, the packaged guide, design, maintainer instructions, and the
+implementation behind documented commands. Removed repeated upstream versions,
+investigation workspace paths, milestone status, and unimplemented examples from
+reference docs. README retains the exact archive filename needed for installation.
+The design now describes architecture; future command work remains in deeds.
+
+An export in one shell tool invocation was absent in the next. Commands now select
+`.binja` in their current working directory by default, with `--state-dir` for an
+explicit location. The CLI no longer reads `BINJA_STATE_DIR`; the supervisor still
+sets it internally for the GUI plugin. This is a change to the initial interface:
+existing sessions at other paths require `--state-dir`. Recovery hints include
+the resolved session path, quoted for the shell. The guide also explains that
+script file access occurs in the GUI process, with its startup working directory
+and bundled interpreter.
+
+`nix build`, Python compilation, documentation link checks, and `deeds check`
+passed. Focused checks verified selection across independent CLI processes,
+changed working directories, explicit paths, ignored ambient state configuration,
+socket path limits, and recovery hints containing spaces. The updated live suite
+passed in `/tmp/binja-smoke-drw4nb58`, including workspace defaults, explicit access
+to the same session, runtime/API version agreement, script working directory, and
+the existing target, recovery, save/reopen, and shutdown checks.
+
+Found a separate recovery bug: exhausting the request-ID ledger also rejects
+`save`, despite an error directing the user to save and restart. Filed `2ajrs7`;
+the guide now says to save and restart before reaching the limit. Broader review
+of concurrency, crash recovery, and persistence failure modes remains pending.
+No subagents were used. The user explicitly kept review/usability trials gated
+while this preliminary pass is under review; `2nbgtk` and `r2neck` remain open.

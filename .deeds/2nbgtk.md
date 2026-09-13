@@ -3,15 +3,16 @@ blocked-by: [zxazzq, 2ggtpn]
 ---
 # Verify the MVP and run initial subagent review and usability trials
 
-This is the first feedback checkpoint, not final acceptance of every feature in [the design](../docs/design.md). The CLI skeleton supplies `--help` and `skill`; maintain that guide alongside implemented commands before this task starts.
+Verify the installed interface before adding convenience commands and alternate display modes. Keep `--help` and the packaged guide current with implemented commands.
 
 ## Operator checkpoint
 
 The user requested: “Once you have the MVP, I'd like to vibe check the UX before
 we proceed with subagent reviews and trials.” The installed MVP and reproducible
-smoke checks are complete. Wait for the operator's UX feedback before spawning
-review or usability agents. Keep this issue and r2neck open until those trials
-and their resulting fixes are complete.
+smoke checks are complete. The subsequent preliminary documentation review is
+tracked in `a7m7vd`; the user explicitly said “don't run subagent tests yet.”
+Wait for approval to proceed with review or usability agents. Keep this issue and
+r2neck open until those trials and their resulting fixes are complete.
 
 ## Work
 

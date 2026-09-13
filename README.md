@@ -1,78 +1,58 @@
 # Headless Binary Ninja
 
-A locally maintained CLI for Binary Ninja Personal, using a managed GUI on a
-private Wayland compositor. Commands run Python inside the GUI against explicit
-BinaryViews. The MVP covers static analysis, request recovery, API lookup, and
-deliberate database saves.
+`binja` is a CLI for agent-driven static analysis with Binary Ninja Personal.
+It manages a persistent GUI on a private Wayland compositor and runs Python
+against its open BinaryViews. It includes API lookup, recoverable requests,
+and explicit database saves.
 
-Start with `binja --help`, then `binja skill` for the packaged workflow guide.
-Commands wait for completed analysis unless explicitly told otherwise.
+## Install
 
-Import the licensed archive, then build the CLI (x86_64 Linux with Nix):
+Requires x86_64 Linux, Nix with flakes enabled, and a Binary Ninja Personal license.
+From this checkout, import the licensed archive and install the CLI:
 
 ```sh
-nix-store --add-fixed sha256 ~/temp/binaryninja_linux_6.0.10601_personal.zip
-nix build
-./result/bin/binja --help
-./result/bin/binja skill
-# Optional persistent installation:
+nix-store --add-fixed sha256 /path/to/binaryninja_linux_6.0.10601_personal.zip
 nix profile install .
+binja --help
 ```
 
-The archive is pinned to 6.0.10601. Its vendor tree is immutable; the separate
-`binja-runtime` FHS launcher preserves bundled Python and Qt. Supply the license
-at runtime. Do not publish the paid runtime closure to public binary caches.
+The package pins the archive and bundles its matching Python API documentation.
+The license is supplied at runtime, defaulting to `~/.binaryninja/license.dat`;
+use `binja start --license PATH` to select another file. Keep the paid runtime
+out of public binary caches.
 
-For a first session, put the built CLI on PATH and copy a benign sample into a
-workspace. The default runtime license is `~/.binaryninja/license.dat`; override
-it with `start --license PATH`.
+## Use
+
+Run commands from your analysis workspace, with a binary named `sample`:
 
 ```sh
-export PATH="$PWD/result/bin:$PATH"
-mkdir -p temp/try
-cd temp/try
-cp --dereference /usr/bin/env ./sample
-export BINJA_STATE_DIR="$PWD/state"
 binja start
-binja api show BinaryView.get_functions_containing
 binja open ./sample
 binja py -c 'result = [(f.name, hex(f.start)) for f in bv.functions][:10]'
 binja py -c 'bv.set_comment_at(bv.entry_point, "Reviewed entry point")'
 binja save ./analysis.bndb
 binja stop
-binja start
-binja open ./analysis.bndb
-binja py -c 'result = bv.get_comment_at(bv.entry_point)'
-binja stop
 ```
 
-Open multiple files and use `--target` with a handle from `binja targets` or an
-unambiguous filename/path. Each request keeps its intended view even if GUI focus
-or another client changes. `--json` provides structured output.
+Commands use `.binja` in their working directory for session state. Keep the same
+working directory across calls, or pass `--state-dir PATH` on each command.
+Reopen `analysis.bndb` after starting a new session to continue saved work.
+`binja skill` prints the full workflow, including multiple targets, API lookup,
+and recovery after a client timeout. It works without a session or license.
 
-Long commands print a request ID before submitting. `--no-wait` submits without
-waiting; `binja request ID --wait 30` retrieves the same execution. A client timeout
-does not cancel or roll back a script. `stop` refuses pending work and unsaved
-changes; `stop --force` deliberately discards them. Save databases outside the
-managed state directory. The guide explains retention limits and failure behavior.
+## Development
 
-Run the live checks against an installed CLI and a small benign ELF:
+Build and run the live checks from the checkout:
 
 ```sh
-python3 tests/smoke.py --binja ./result/bin/binja --sample /path/to/sample
+nix build
+python3 tests/smoke.py --binja ./result/bin/binja --sample /path/to/small/ELF
 ```
 
-The checks copy inputs into another workspace and never execute them. They cover
-targeting, readiness, request recovery, bounded results, GUI close/reopen, saving,
-restart persistence, and shutdown guards. A Personal license is required.
+The checks require a Personal license. They copy the sample into a temporary
+workspace, analyze it without executing it, and verify targeting, request recovery,
+save/reopen, and shutdown behavior.
 
-The MVP is ready for the operator's UX check. Subagent reviews and usability trials
-are pending that checkpoint. Desktop/VNC, per-view close, decompile/xref convenience
-commands, richer API lookup, and update notices remain deferred. Large-binary save
-performance and recovery from native crashes have not been characterized.
-
-[The design](docs/design.md) describes the broader interface; `deeds ready` and
-`deeds show r2neck --tree` track the remaining review/trial gate and follow-ups.
-
-[The investigation log](docs/log.md) contains the tested behavior of the supplied
-6.0.10601 Personal distribution and the reference projects.
+See [the design](docs/design.md) for architecture and interface constraints.
+`deeds ready` lists pending work; [the investigation log](docs/log.md) records
+runtime observations and verification history.

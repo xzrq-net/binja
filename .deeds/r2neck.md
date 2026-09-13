@@ -6,9 +6,9 @@ tier: objective
 
 User goal: “package and wrap Binary Ninja for agentic use.” Immediate priority: “redo the deeds to have a usability test MVP sooner”; subcommands can be implemented incrementally at the tail.
 
-Use a locally maintained Python CLI and a small receiver in the pinned Personal GUI, with RPC under an explicitly selected state directory. Borrow from banteg/bn with attribution; no MCP. Start with private Wayland, explicit BinaryViews, completed-analysis defaults, arbitrary Python, matching API lookup, and deliberate database saving.
+Use a locally maintained Python CLI and a small receiver in the pinned Personal GUI, with RPC under a workspace state directory. Borrow from banteg/bn with attribution; no MCP. Start with private Wayland, explicit BinaryViews, completed-analysis defaults, arbitrary Python, matching API lookup, and deliberate database saving.
 
-[The design](../docs/design.md) describes the intended interface. This graph defines delivery order and the MVP boundary. Use `deeds ready` and `deeds show r2neck --tree`. Parts are local commit boundaries; commit completed work and finish with `jj new`.
+[The design](../docs/design.md) describes architecture and interface constraints. This graph defines delivery order and the MVP boundary. Use `deeds ready` and `deeds show r2neck --tree`. Parts are local commit boundaries; commit completed work and finish with `jj new`.
 
 ## Done when
 

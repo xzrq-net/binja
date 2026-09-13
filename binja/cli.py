@@ -1,6 +1,7 @@
 import argparse
 import json
 from pathlib import Path
+import shlex
 import sys
 import time
 import uuid
@@ -9,7 +10,7 @@ from .common import Error, rpc, state_path
 
 
 def globals_for(parser):
-    parser.add_argument("--state-dir", default=argparse.SUPPRESS, help="session directory (or BINJA_STATE_DIR)")
+    parser.add_argument("--state-dir", default=argparse.SUPPRESS, help="session directory (default: .binja in the working directory)")
     parser.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="machine-readable output")
     parser.add_argument("--target", default=argparse.SUPPRESS, help="view handle, unique filename/path, or active")
 
@@ -43,7 +44,7 @@ def submit(state, args, source, filename, parameters, no_target=False):
     return record
 
 
-def render(value, command, as_json):
+def render(value, command, as_json, state):
     if as_json:
         print(json.dumps(value, indent=2))
         return
@@ -72,7 +73,7 @@ def render(value, command, as_json):
         if value.get("error"):
             print(value.get("traceback") or value["error"])
         if value["status"] in ("queued", "running", "waiting_analysis"):
-            print(f"Retrieve with: binja request {value['id']} --wait 30")
+            print(f"Retrieve with: binja --state-dir {shlex.quote(str(state))} request {value['id']} --wait 30")
     elif command == "targets":
         for target in value:
             dirty = "unsaved" if target["modified"] or target["analysis_changed"] else "clean"
@@ -195,7 +196,7 @@ def main():
             value = session.start(state, args.license) if args.command == "start" else session.stop(state, args.force)
         else:
             value = rpc(state, args.command)
-        render(value, args.command, args.json)
+        render(value, args.command, args.json, state)
         if isinstance(value, dict) and value.get("status") in ("failed", "cancelled", "expired"):
             sys.exit(1)
         if isinstance(value, dict) and value.get("status") in ("running", "waiting_analysis", "queued") and not getattr(args, "no_wait", False):

@@ -17,10 +17,7 @@ def build_config():
 
 
 def state_path(value):
-    value = value or os.environ.get("BINJA_STATE_DIR")
-    if not value:
-        raise Error("Select a session with --state-dir PATH or BINJA_STATE_DIR.")
-    state = Path(value).expanduser().resolve()
+    state = Path(value or ".binja").expanduser().resolve()
     if len(os.fsencode(state / "runtime/control.sock")) > 107:
         raise Error("State path is too long for Unix sockets; choose a shorter --state-dir.")
     return state

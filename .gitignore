@@ -2,5 +2,6 @@
 /.direnv/
 /result
 /temp
+/.binja/
 __pycache__/
 *.pyc
