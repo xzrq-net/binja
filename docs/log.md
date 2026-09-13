@@ -479,3 +479,71 @@ after normal shutdown and restart.
 
 `nix build`, Python compilation, and the live smoke suite passed; live evidence
 is in `/tmp/binja-smoke-jemuwrj_`. No subagents were used.
+
+## 2026-09-13 — Threading and operation ownership research
+
+The user questioned whether the execution model matches Binary Ninja's threading
+and GUI consistency constraints, proposing reconnect/wait for at most one ongoing
+operation. This investigation changes no runtime code or protocol.
+
+Inspected official documentation and the installed Python API. The local API
+checkout's working tree is older and has unrelated changes, so source inspection
+used tag `stable/6.0.10601` (`2ddf304b3275aa184e95570404539cbc4beb64c6`) without
+changing the checkout. Its `mainthread.py`, `plugin.py`, and `scriptingprovider.py`
+match the installed files byte for byte.
+
+Findings:
+
+- Binary Ninja explicitly supports off-main-thread execution. The
+  [mainthread reference](https://api.binary.ninja/binaryninja.mainthread-module.html)
+  distinguishes the GUI thread from native worker queues and dedicated Python
+  threads. [BackgroundTaskThread](https://api.binary.ninja/binaryninja.plugin-module.html#binaryninja.plugin.BackgroundTaskThread)
+  wraps a Python thread and reports progress in the status bar, without requiring
+  a modal dialog.
+- The [native scripting provider](https://github.com/Vector35/binaryninja-api/blob/2ddf304b3275aa184e95570404539cbc4beb64c6/python/scriptingprovider.py)
+  owns an `InterpreterThread`. `perform_execute_script_input` rejects new script
+  input while that interpreter is busy. This is a per-interpreter rule, not a
+  global application lock shared with our executor or other plugins.
+- [run_progress_dialog](https://api.binary.ninja/binaryninja.interaction-module.html#binaryninja.interaction.run_progress_dialog)
+  executes its callback on a background thread. The matching
+  [ProgressTask header](https://github.com/Vector35/binaryninja-api/blob/2ddf304b3275aa184e95570404539cbc4beb64c6/ui/progresstask.h)
+  documents that the dialog blocks other UI interaction.
+  [Qt modality](https://doc.qt.io/qt-6/qdialog.html#modal-dialogs) governs input to
+  other windows; it is not itself a lock on the analysis database or on other
+  API callers.
+- Thread rules are API- and context-specific. Native UI calls belong on the UI
+  thread. [update_analysis_and_wait](https://api.binary.ninja/binaryninja.binaryview-module.html#binaryninja.binaryview.BinaryView.update_analysis_and_wait)
+  forbids UI and worker contexts; the native worker-pool restriction must not be
+  confused with a dedicated Python interpreter thread. The
+  [notification contract](https://api.binary.ninja/binaryninja.binaryview-module.html#binaryninja.binaryview.BinaryDataNotification)
+  warns that callbacks hold a global lock and can deadlock if they wait for another
+  thread that needs it. `create_database` separately warns against holding a view
+  lock across its main-thread work. There is no basis here for treating an arbitrary
+  multi-call script as an isolated transaction.
+
+A bounded live probe in `/tmp/binja-threading-49xd0kqv` used an in-memory two-byte
+view in a separate managed GUI. `BackgroundTaskThread` ran off the main thread,
+read the view, and observed no modal widget. `run_progress_dialog` also ran its
+callback off the main thread and exposed a window-modal `ProgressDialog`. While
+that dialog remained open, a separate Python thread successfully set and read a
+comment on the same disposable view. UI callbacks continued to run on the main
+thread. The dialog closed and the owned GUI was stopped. This demonstrates the
+absence of automatic exclusion for that API access; it does not certify all
+concurrent mutations, serialization, or native database internals as safe.
+
+The current plugin has one execution thread, so its queued CLI scripts already
+run serially. It admits a backlog of 64 and retains 64 finished results plus the
+fingerprint dictionary. Its locks protect its own records, not whole-script access
+against native console commands, GUI actions, other plugins, or threads spawned
+by a submitted script. The previous recommendation to eliminate reconnect/wait
+was too broad: attachment to an already-running operation is useful independently
+of queues and resubmission semantics.
+
+Recommended direction for discussion: one active operation per managed instance,
+no backlog, an explicit busy response naming that operation, and reconnect/wait
+against its ID. Retain its completion across a disconnect so a completion/reconnect
+race is recoverable. Remove resubmission fingerprints and arbitrary job-history
+management. Keep operation ownership distinct from thread placement; plugin-level
+serialization alone cannot promise exclusive access against independent GUI/plugin
+writers. Interactive GUI coordination needs an explicit policy before desktop
+support. No implementation changes or subagent trials were performed.
