@@ -175,6 +175,24 @@ explicitly discards work. BNDB files are saved to explicit destinations outside
 managed state. A restart retires request artifacts and does not restore views or
 unsaved analysis.
 
+`close HANDLE|PATH [--force]` retires the selected view and all other views of
+its file. It retains the selection at admission, refuses queued/running requests
+for any sibling view, and prevents new target requests while close is pending.
+`--force` permits discarding unsaved changes; it never overrides pending work.
+The packaged close script runs on the existing worker and closes GUI tabs on the
+UI thread with the worker paused. The final pending-work check and close share
+the admission lock, acquired on the UI thread. No supervisor operation is needed.
+Close does not wait for analysis and stays outside the request undo group.
+
+The native tab API has no force argument. During a forced close, a scoped Qt
+handler selects Discard on its modified-file prompts; an existing modal prevents
+close. A view is live only while its file has an attached GUI tab, even if Qt's
+deferred deletion or retained requests keep the file context alive. Removing the
+tabs expires all sibling handles immediately; execution revalidation rejects
+queued requests whose handles expired after admission. Later handle lookups also
+report expiry with guidance to list targets or reopen. Bare `bv.file.close()` in
+Python bypasses the managed checks and GUI retirement.
+
 ## Display modes
 
 Sessions use a private labwc compositor with a headless backend and software

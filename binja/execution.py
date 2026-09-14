@@ -171,9 +171,9 @@ class Execution:
         if not isinstance(spec.get("source"), str) or not isinstance(spec.get("filename"), str):
             raise Error("Execution requires source text and a filename.")
 
-        if spec.get("kind", "py") not in ("py", "open", "save", "decompile", "il", "disasm", "xrefs", "refs", "callers",
-                "info", "functions", "imports", "strings", "rename", "comment", "proto", "retype", "declare", "undo"):
-            raise Error("Request kind must be py, open, save, decompile, il, disasm, xrefs, refs, callers, "
+        if spec.get("kind", "py") not in ("py", "open", "save", "close", "decompile", "il", "disasm", "xrefs", "refs",
+                "callers", "info", "functions", "imports", "strings", "rename", "comment", "proto", "retype", "declare", "undo"):
+            raise Error("Request kind must be py, open, save, close, decompile, il, disasm, xrefs, refs, callers, "
                 "info, functions, imports, strings, rename, comment, proto, retype, declare, or undo.")
 
         def check_duplicate():
@@ -204,6 +204,7 @@ class Execution:
             duplicate = check_duplicate()
             if duplicate:
                 return duplicate
+            self.check_close(target, spec.get("kind", "py"))
             record = dict(id=request_id, status="queued", target_snapshot=target, target_snapshot_stage="submission",
                 allow_incomplete=bool(spec.get("allow_incomplete", False)), submitted=time.time(),
                 kind=spec.get("kind", "py"), filename=spec["filename"],
@@ -244,6 +245,33 @@ class Execution:
             if state == self.bn.AnalysisState.HoldState:
                 raise Error("Analysis is on hold. Resume it explicitly with py --allow-incomplete, or deliberately allow incomplete results.")
             time.sleep(0.1)
+
+    def check_close(self, target, kind, request_id=None):
+        # Called under the admission lock; every view of a file shares its fate.
+        if target is None:
+            return
+        pending = [r for r in self.records.values() if r["status"] not in TERMINAL
+            and r["id"] != request_id
+            and (r.get("target_snapshot") or {}).get("file_id") == target["file_id"]]
+        closing = next((r for r in pending if r.get("kind") == "close"), None)
+        if closing:
+            raise Error(f"Close pending for {target['handle']}: {closing['id']}. "
+                "Wait for it or cancel it before submitting more work; run binja targets afterwards.")
+        if kind == "close" and pending:
+            ids = ", ".join(r["id"] for r in pending)
+            raise Error(f"Outstanding requests for {target['handle']}: {ids}. "
+                "Inspect binja requests and wait or cancel queued work before closing; "
+                "--force only discards unsaved changes.")
+
+    def close(self, record, force):
+        def close_on_ui():
+            # Take the lock on the UI thread, never while waiting for it. The
+            # worker is paused here; admission cannot race the final check/close.
+            with self.lock:
+                _, target = self.bridge.targets.resolve(record["target_snapshot"]["handle"])
+                self.check_close(target, "close", record["id"])
+                return self.bridge.targets.close(target, force)
+        return on_ui(close_on_ui)
 
     def prepare_stop(self):
         with self.lock:
@@ -294,7 +322,8 @@ class Execution:
         try:
             if bv is not None:
                 on_ui(lambda: self.bridge.targets.resolve(record["target_snapshot"]["handle"]))
-                self.wait_ready(bv, record)
+                if record["kind"] != "close":
+                    self.wait_ready(bv, record)
                 on_ui(lambda: self.bridge.targets.resolve(record["target_snapshot"]["handle"]))
             with self.lock:
                 if record["status"] == "cancelled":
@@ -304,7 +333,7 @@ class Execution:
             scope = dict(bn=self.bn, bv=bv, args=spec.get("args", {}), result=None,
                 on_ui=captured_ui, bridge=self.bridge, request=record, __name__="__binja_script__")
             with self.stdout.capture(stdout), self.stderr.capture(stderr):
-                undo_id = bv.begin_undo_actions() if bv is not None and record["kind"] != "undo" else None
+                undo_id = bv.begin_undo_actions() if bv is not None and record["kind"] not in ("undo", "close") else None
                 try:
                     exec(compile(spec["source"], spec["filename"], "exec"), scope, scope)
                 finally:

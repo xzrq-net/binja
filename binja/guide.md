@@ -38,6 +38,9 @@ it updates that database on subsequent saves and refuses to overwrite an unrelat
 file. `targets --json` includes modification flags and the last save observed by
 this session (`null` means unknown). `stop` refuses pending work and unsaved changes;
 `stop --force` terminates the session and discards unsaved work.
+`close HANDLE|PATH` closes that file's views, including redundant Raw views,
+and expires their handles. It refuses pending work; `--force` only overrides
+unsaved changes. A bare `bv.file.close()` from `py` bypasses this coordination.
 
 After a restart, use `open ./analysis.bndb` to continue saved analysis. Open tabs,
 unsaved edits, request results, and Python state are not restored.

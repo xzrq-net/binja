@@ -355,6 +355,7 @@ result = on_ui(modal)
         assert cli("status")["file_count"] == 2
         assert "ambiguous" in py("result = 0", code=1)["error"]
         assert "ambiguous" in py("result = 0", "sample", code=1)["error"]
+        assert "ambiguous" in cli("close", "sample", code=1)["error"]
         assert py("result = bv.file.filename", "a/sample")["result"] == str(sample_a)
         raw = next(t["handle"] for t in cli("targets") if t["path"] == str(sample_a) and t["view_type"] == "Raw")
         assert py("result = bv.view_type", raw)["result"] == "Raw"
@@ -961,7 +962,7 @@ bv.update_analysis_and_wait()
         persisted = py(f"f = bv.get_function_at({start}); result = (f.name, f.comment)", reopened)["result"]
         assert persisted == ["smoke_persisted_name", "Typed persistent function comment"]
         assert py("result = bv.get_comment_at(bv.entry_point)", reopened)["result"] == "persisted annotation"
-        assert "No live target" in py("result = 0", a, code=1)["error"]
+        assert "handle expired" in py("result = 0", a, code=1)["error"]
         assert "old generation" in cli("request", request_id, code=1)["error"]
         for sample in (sample_a, sample_b):
             assert hashlib.sha256(sample.read_bytes()).hexdigest() == original_hash
@@ -973,7 +974,7 @@ bv.update_analysis_and_wait()
         assert cli("targets") == []
         reopened_again = cli("open", database)["result"]["handle"]
         assert reopened_again != reopened
-        assert "No live target" in py("result = 0", reopened, code=1)["error"]
+        assert "handle expired" in py("result = 0", reopened, code=1)["error"]
         runtime = py("import os; result = {'updates': bn.update.are_auto_updates_enabled(), 'qt': os.environ['QT_QPA_PLATFORM'], 'user_site': __import__('site').ENABLE_USER_SITE}", reopened_again)["result"]
         assert runtime == {"updates": False, "qt": "wayland", "user_site": False}
         # Use a smaller result limit to exercise pruning quickly.
@@ -1033,6 +1034,122 @@ with bridge.execution.lock:
         exported = cli("requests", "--all")
         assert len(exported["requests"]) >= 4096
         assert exported["finished_total"] == exported["finished_shown"]
+
+        phase("Per-file close: pending work, forced discard, and expired handles")
+        closing = cli("open", sample_b)["result"]
+        handle = closing["handle"]
+        siblings = [t for t in cli("targets") if t["file_id"] == closing["file_id"]]
+        raw_handle = next(t["handle"] for t in siblings if t["view_type"] == "Raw")
+        assert len(siblings) >= 2
+        assert "omit --target" in cli("close", handle, "--target", reopened_again, code=1)["error"]
+        assert "No live target" in cli("close", "missing-file", code=1)["error"]
+
+        def close_gate(target, label, after=""):
+            ready, release = workspace / (label + "-ready"), workspace / (label + "-release")
+            record = py('''from pathlib import Path
+import time
+Path(args['ready']).touch()
+deadline = time.monotonic() + 15
+while not Path(args['release']).exists() and time.monotonic() < deadline:
+    time.sleep(.01)
+''' + after, target, no_wait=True,
+                args=json.dumps(dict(ready=str(ready), release=str(release), file_id=closing["file_id"])),
+                **({"no_target": True} if target is None else {}))
+            deadline = time.monotonic() + 3
+            while not ready.exists():
+                assert time.monotonic() < deadline, "Close gate did not start"
+                time.sleep(.01)
+            return record, release
+
+        running, release = close_gate(handle, "running-close")
+        try:
+            for flags in ([], ["--force"]):
+                refused = cli("close", raw_handle, *flags, code=1)
+                assert "Outstanding requests" in refused["error"] and running["id"] in refused["error"]
+        finally:
+            release.touch()
+        assert retrieve(running)["status"] == "completed"
+
+        # Force must not answer a modal that was already present.
+        py('''from PySide6.QtWidgets import QMessageBox
+def show():
+    bridge.close_modal = QMessageBox()
+    bridge.close_modal.setWindowTitle('Analysis Modified')
+    bridge.close_modal.setStandardButtons(QMessageBox.Discard | QMessageBox.Cancel)
+    bridge.close_modal.setModal(True)
+    bridge.close_modal.show()
+on_ui(show)
+''', no_target=True)
+        try:
+            assert "GUI modal is open" in cli("close", handle, "--force", code=1)["error"]
+            assert cli("status")["modal_open"] is True
+        finally:
+            py("on_ui(bridge.close_modal.reject)", no_target=True)
+
+        py("bv.set_comment_at(bv.entry_point, 'discard this close edit'); bv.write(bv.entry_point, b'\\x90')", handle)
+        refused = cli("close", handle, code=1)
+        assert refused["kind"] == "close" and "Unsaved analysis" in refused["error"]
+        assert "--force" in refused["error"] and cli("status")["file_count"] == 2
+        blocker, release = close_gate(reopened_again, "queued-close")
+        try:
+            queued = py("raise AssertionError('cancelled close work ran')", raw_handle, no_wait=True)
+            refused = cli("close", handle, "--force", code=1)
+            assert "Outstanding requests" in refused["error"] and queued["id"] in refused["error"]
+            assert cli("cancel", queued["id"])["status"] == "cancelled"
+            closed = cli("close", raw_handle, "--force", "--no-wait")
+            assert closed["status"] == "queued" and closed["kind"] == "close"
+            assert "Close pending" in py("raise AssertionError('close admission raced')", handle, no_wait=True, code=1)["error"]
+            assert "Close pending" in cli("close", handle, code=1)["error"]
+        finally:
+            release.touch()
+        assert retrieve(blocker)["status"] == "completed"
+        closed = retrieve(closed)
+        assert closed["status"] == "completed" and closed["result"]["discarded"] is True
+        assert set(closed["result"]["handles"]) == {t["handle"] for t in siblings}
+        assert cli("close", handle, "--request-id", closed["id"]) == cli("request", closed["id"])
+        for old_handle in (handle, raw_handle):
+            assert "handle expired" in py("result = bv.entry_point", old_handle, code=1)["error"]
+            assert "handle expired" in cli("close", old_handle, "--force", code=1)["error"]
+        remaining = cli("status")
+        assert remaining["file_count"] == 1 and remaining["view_count"] == len(remaining["targets"])
+        assert all(t["file_id"] != closing["file_id"] for t in remaining["targets"])
+        assert py("result = bv.file.filename", reopened_again)["result"] == str(database)
+        assert hashlib.sha256(sample_b.read_bytes()).hexdigest() == original_hash
+
+        closing = cli("open", sample_b)["result"]
+        handle = closing["handle"]
+        assert handle not in closed["result"]["handles"]
+        assert py("result = bv.get_comment_at(bv.entry_point)", handle)["result"] == ""
+        # Closing is useful even when analysis is held; it does not wait for it.
+        py("bv.set_analysis_hold(True)", handle)
+        text = subprocess.check_output([binary, "close", "b/sample", "--force"], cwd=workspace,
+            env=env, text=True, stderr=subprocess.PIPE, timeout=5)
+        assert "Closed " in text and '"handles"' not in text and '"discarded"' not in text
+
+        closing = cli("open", sample_b)["result"]
+        siblings = [t for t in cli("targets") if t["file_id"] == closing["file_id"]]
+        # Simulate a GUI close outside coordination while requests retain views.
+        blocker, release = close_gate(None, "external-close", '''import binaryninjaui as ui
+def external_close():
+    for context in ui.UIContext.allContexts():
+        tab = context.getTabForSessionId(args['file_id'])
+        if tab is not None:
+            context.closeTab(tab)
+on_ui(external_close)
+''')
+        try:
+            retained = [py("raise AssertionError('expired view was executed')", t["handle"], no_wait=True) for t in siblings]
+        finally:
+            release.touch()
+        assert retrieve(blocker)["status"] == "completed"
+        for record in retained:
+            failed = cli("request", record["id"], "--wait", "5", code=1)
+            assert "handle expired" in failed["error"] and "expired view was executed" not in failed["error"]
+        assert cli("status")["file_count"] == 1
+        # A saved database closes without force, leaving a clean empty session.
+        assert cli("close", database)["result"]["discarded"] is False
+        empty = cli("status")
+        assert empty["file_count"] == empty["view_count"] == 0 and cli("targets") == []
 
         phase("Live ownership verification rejects stale metadata")
         metadata_path = state / "runtime/instance.json"

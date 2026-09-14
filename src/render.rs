@@ -166,7 +166,8 @@ fn output(v: &Value) -> Result<()> {
         if !result.is_null()
             && !matches!(
                 text(v, "kind"),
-                "decompile"
+                "close"
+                    | "decompile"
                     | "il"
                     | "disasm"
                     | "xrefs"

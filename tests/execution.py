@@ -140,5 +140,52 @@ class WaitTests(unittest.TestCase):
         self.assertEqual(e.rejected_total, 70)
 
 
+class CloseTests(unittest.TestCase):
+    def setUp(self):
+        self.execution = e = Execution.__new__(Execution)
+        e.lock = threading.RLock()
+        e.records = OrderedDict()
+        self.target = dict(handle='abcdef123456:v1', file_id=7)
+        self.raw = dict(handle='abcdef123456:v2', file_id=7)
+        self.other = dict(handle='abcdef123456:v3', file_id=8)
+        self.closed = []
+        e.bridge = types.SimpleNamespace(targets=types.SimpleNamespace(
+            resolve=lambda handle: (object(), self.target),
+            close=lambda target, force: self.closed.append((target, force))))
+
+    def record(self, rid, kind, target, status):
+        value = dict(id=rid, kind=kind, target_snapshot=target, status=status)
+        self.execution.records[rid] = value
+        return value
+
+    def test_close_refuses_all_pending_states_for_sibling_views(self):
+        e = self.execution
+        closing = self.record('close', 'close', self.target, 'running')
+        for state in ('queued', 'running', 'waiting_analysis'):
+            self.record('work', 'py', self.raw, state)
+            with self.assertRaisesRegex(Error, 'Outstanding requests.*work'):
+                e.check_close(self.target, 'close', 'close')
+            for force in (False, True):
+                with self.assertRaisesRegex(Error, '--force only discards unsaved changes'):
+                    e.close(closing, force)
+        self.assertEqual(self.closed, [])
+        e.records['work']['status'] = 'cancelled'
+        self.record('other', 'py', self.other, 'running')
+        self.record('unbound', 'py', None, 'queued')
+        e.close(closing, True)
+        self.assertEqual(self.closed, [(self.target, True)])
+
+    def test_pending_close_blocks_new_work_but_not_other_files(self):
+        e = self.execution
+        closing = self.record('close', 'close', self.raw, 'queued')
+        for kind in ('py', 'save', 'close'):
+            with self.assertRaisesRegex(Error, 'Close pending.*close'):
+                e.check_close(self.target, kind)
+        e.check_close(self.other, 'py')
+        e.check_close(None, 'py')
+        closing['status'] = 'cancelled'
+        e.check_close(self.target, 'py')
+
+
 if __name__ == '__main__':
     unittest.main()

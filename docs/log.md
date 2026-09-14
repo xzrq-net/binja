@@ -1298,3 +1298,38 @@ Promoted the tested recipe to typed-command usage, retaining native variable
 inventory and the post-analysis HLIL workflow in the guide, and updated the
 small-record/undo contract in design.md. The native recipe remains as disposable
 evidence in `temp/editing/tested-guide-recipe.md`.
+
+## 2026-09-13 — Managed per-file close (vmnn2h)
+
+Implemented `close HANDLE|PATH [--force]` as a packaged command on the existing
+worker. Admission refuses queued, running, or readiness-waiting work for any
+view of the file; an admitted close prevents new work for those views. Force
+only permits discarding unsaved changes. The worker pauses for the UI callback,
+which takes the admission lock and repeats the target and pending-work checks
+before closing. No supervisor cooperation is needed. Close skips analysis
+readiness and must remain outside an editing command's undo action.
+
+Native probes on Personal 6.0.10601 found that `FileContext.close()` leaves GUI
+tabs behind, while `UIContext.closeTab()` retires them and presents Analysis
+Modified or File Modified prompts for unsaved work. The latter has no force
+argument. A timer scoped to forced close selects Discard on those native
+prompts; an existing modal causes refusal before the timer starts. A forced
+close with byte edits and held analysis completed in 0.247 seconds.
+
+File contexts can survive tab removal through Qt deferred deletion or retained
+view references. Registry refresh now requires an attached GUI tab before
+including a file's data views, so analyzed and Raw handles expire together
+immediately. Queued requests retained across an external GUI close fail with
+"handle expired" during execution revalidation. Reopening assigns new handles.
+
+`cargo test`, the Python unit checks, and the live bridge checks passed.
+`nix build` and
+`python3 tests/smoke.py --binja ./result/bin/binja --sample temp/samples/a/sample`
+passed. The smoke additions exercise running and queued work refusal with and
+without force, sibling-view coordination, cancellation before close, refusal
+with an existing modal, unsaved byte and analysis edits, forced discard without
+changing the input file, close receipt recovery without replay, later and
+already-queued expired handles, missing and ambiguous selectors, relative-path
+and clean BNDB close, analysis on hold, human output, consistent target/status
+counts, and clean stop. Probe scripts and transcripts are under
+`temp/close-probe/`.

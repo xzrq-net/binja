@@ -81,8 +81,8 @@ Those generated files are ignored by version control. Refresh them after package
 changes. Installed binaries locate resources relative to themselves; development
 builds use `binja/` in the source checkout. `BINJA_RESOURCE_DIR` can select another
 resource directory explicitly. Restart sessions after changing the plugin.
-`cargo test` checks the Rust transport; `tests/protocol.py`, `tests/execution.py`,
-and `tests/api_index.py` check Python helpers without a GUI.
+`cargo test` checks the Rust client; the other `tests/*.py` scripts check Python
+helpers without a GUI.
 
 See [the design](docs/design.md) for architecture and interface constraints.
 `deeds ready` lists pending work; [the investigation log](docs/log.md) records

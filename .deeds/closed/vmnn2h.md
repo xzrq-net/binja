@@ -15,3 +15,5 @@ this; document that.
 Verify: close with pending work refused; close with unsaved edits refused, then
 forced; handle reuse after close rejected; clean `stop` afterwards. Extend
 tests/smoke.py.
+
+Closed: Added managed close HANDLE|PATH with pending-work and unsaved-change guards, UI tab retirement including sibling views, and immediate handle expiry. Verified installed smoke, Rust/Python unit checks, and live bridge checks; lifecycle contract and guide updated.

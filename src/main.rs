@@ -194,6 +194,18 @@ enum Commands {
         #[command(flatten)]
         execution: Execution,
     },
+    #[command(about = "Close a target and its file's other views")]
+    Close {
+        #[arg(value_name = "HANDLE|PATH")]
+        selector: String,
+        #[arg(
+            long,
+            help = "Discard unsaved changes; pending work still prevents close"
+        )]
+        force: bool,
+        #[command(flatten)]
+        execution: Execution,
+    },
     #[command(about = "Read the GUI's rendered Pseudo C for a function")]
     Decompile {
         function: String,
@@ -376,7 +388,11 @@ fn submit(cli: &Cli, state: &Path, execution: &Execution, mut spec: Value) -> Re
     io::stderr().flush()?;
     spec["id"] = json!(id);
     spec["allow_incomplete"] = json!(execution.allow_incomplete);
-    spec["target"] = match &cli.target {
+    let target = match &cli.command {
+        Commands::Close { selector, .. } => Some(selector),
+        _ => cli.target.as_ref(),
+    };
+    spec["target"] = match target {
         Some(t) if t.contains('/') => json!(absolute(t)?),
         Some(t) => json!(t),
         None => Value::Null,
@@ -530,6 +546,20 @@ fn run(cli: &Cli) -> Result<i32> {
                     json!({"kind":"py","filename":filename,"source":source,"args":args,"no_target":no_target}),
                 )?,
                 "py",
+                execution.no_wait,
+            )
+        }
+        Commands::Close {
+            force, execution, ..
+        } => {
+            ensure!(
+                cli.target.is_none(),
+                "close selects a target by HANDLE|PATH; omit --target."
+            );
+            let spec = command_script(&resources, "close", json!({"force":force}))?;
+            (
+                submit(cli, &state, execution, spec)?,
+                "close",
                 execution.no_wait,
             )
         }
