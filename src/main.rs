@@ -346,6 +346,11 @@ fn run(cli: &Cli) -> Result<i32> {
 }
 fn main() {
     let cli = Cli::parse();
+    if !matches!(cli.command, Commands::Supervisor { .. }) {
+        // Rust ignores SIGPIPE, so `binja skill | head -1` would panic on EPIPE.
+        // The supervisor keeps the ignore: its lifetime must not depend on a reader.
+        unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
+    }
     let code = match run(&cli) {
         Ok(code) => code,
         Err(error) => {
