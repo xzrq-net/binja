@@ -21,3 +21,5 @@ Retire the guide's "Inventory" recipe when these land.
 
 Evidence: trial C asked for summary/functions/imports with sort-by-size
 (temp/trials/reportC.md:102); trial A for listing (reportA.md:185).
+
+Closed: info, functions, imports, and strings delivered on the page contract with totals and filters; verified row-for-row against native queries on sample and bash.

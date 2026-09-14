@@ -503,6 +503,12 @@ result = sorted(edges)
             assert outbound["direction"] == "outbound" and outbound["relation"] == "reference"
             assert sorted([r["kind"], r["address"], r["to"]] for r in outbound["rows"]) == native
             assert ["data", fixture["data_source"], data["address"]] in native
+            py("for row in args:\n    symbol = bv.get_symbol_at(int(row['to'], 16))\n    "
+                "assert row['to_symbol'] == (symbol.full_name if symbol else None)", a, args=json.dumps(outbound["rows"]))
+            human = subprocess.check_output([binary, "refs", name, "--target", a, "--limit", "10000"],
+                cwd=workspace, env=env, text=True)
+            named = [r for r in outbound["rows"] if r["to_symbol"]]
+            assert named and any(f"-> {r['to_symbol']} @ {r['to']}" in human for r in named)
             interior = payload(cli("xrefs", name + "+1", "--target", a))
             assert interior["addresses"] == [fixture["data_source"]]  # Exact address, not function start.
             for command, subject in (("xrefs", data["name"]), ("refs", name), ("callers", imports["name"])):
@@ -526,6 +532,82 @@ result = sorted(edges)
             assert empty["kind"] == command and payload(empty)["rows"] == []
             assert payload(empty)["page"]["next_offset"] is None
             assert "Zero references is not proof of no callers" in empty["stdout"]["text"]
+            assert empty["stdout"]["text"].endswith("0 rows\n")
+
+        phase("Inventories: native values, ordering, filtering, and complete pagination")
+        native = payload(py("""result = dict(
+    functions=[dict(address=hex(f.start), name=f.name, total_bytes=f.total_bytes) for f in bv.functions],
+    strings=[dict(address=hex(s.start), type=s.type.name, length=s.length, value=s.value) for s in bv.strings],
+    libraries=sorted(bv.libraries), segments=len(bv.segments), sections=len(bv.sections), entry_point=hex(bv.entry_point))
+""", a))
+        inventories = {}
+        for command in ("info", "functions", "imports", "strings"):
+            record = cli(command, "--target", a, "--limit", "10000")
+            whole = payload(record)
+            inventories[command] = whole
+            assert whole["target"] == a and whole["page"]["total"] == len(whole["rows"])
+            default = payload(cli(command, "--target", a))
+            assert default["page"]["limit"] == 64 and default["rows"] == whole["rows"][:64]
+            first = payload(retrieve(cli(command, "--target", a, "--limit", "2", "--no-wait")))
+            tail = payload(cli(command, "--target", a, "--offset", "2", "--limit", "10000"))
+            assert first["rows"] + tail["rows"] == whole["rows"]
+            assert first["page"]["next_offset"] == 2 and tail["page"]["next_offset"] is None
+            end = cli(command, "--target", a, "--offset", str(whole["page"]["total"] + 1))
+            assert payload(end)["rows"] == [] and payload(end)["page"]["total"] == whole["page"]["total"]
+            assert "rows none at offset" in end["stdout"]["text"]
+            human = subprocess.check_output([binary, "request", record["id"]], cwd=workspace, env=env, text=True)
+            assert command in human and '"rows":' not in human
+        info = inventories["info"]
+        assert info["path"] == str(sample_a) and info["view_type"] == "ELF"
+        assert info["architecture"] == function["arch"] and info["entry_point"] == native["entry_point"]
+        assert info["function_count"] == len(native["functions"])
+        assert info["counts"] == dict(libraries=len(native["libraries"]), segments=native["segments"], sections=native["sections"])
+        assert [r["name"] for r in info["rows"] if r["kind"] == "library"] == native["libraries"]
+        py("""for row in args:
+    if row['kind'] == 'section':
+        section = bv.sections[row['name']]
+        assert (row['start'], row['end'], row['semantics']) == (hex(section.start), hex(section.end), section.semantics.name)
+    elif row['kind'] == 'segment':
+        segment = next(s for s in bv.segments if s.start == int(row['start'], 16))
+        permissions = ('r' if segment.readable else '-') + ('w' if segment.writable else '-') + ('x' if segment.executable else '-')
+        assert row['permissions'] == permissions and row['end'] == hex(segment.end)
+        assert row['file_offset'] == hex(segment.data_offset) and row['file_length'] == segment.data_length
+""", a, args=json.dumps(info["rows"]))
+        for order, key in (("address", lambda f: (int(f["address"], 16), f["name"])),
+                ("name", lambda f: (f["name"], int(f["address"], 16))),
+                ("size", lambda f: (-f["total_bytes"], int(f["address"], 16), f["name"]))):
+            sorted_functions = payload(cli("functions", "--target", a, "--sort", order, "--limit", "10000"))
+            assert sorted_functions["rows"] == sorted(native["functions"], key=key)
+        assert inventories["strings"]["rows"] == sorted(native["strings"], key=lambda s: (int(s["address"], 16), s["type"], s["length"]))
+        py("""kinds = {bn.SymbolType.ImportedFunctionSymbol, bn.SymbolType.ImportAddressSymbol, bn.SymbolType.ExternalSymbol}
+symbols = sorted((s for s in bv.get_symbols() if s.type in kinds), key=lambda s: (s.full_name, s.address, s.type.name))
+assert len(symbols) == len(args)
+for symbol, row in zip(symbols, args):
+    origin = bv.lookup_imported_object_library(symbol.address)
+    assert row == dict(address=hex(symbol.address), kind=symbol.type.name, name=symbol.full_name,
+        type_library=origin[0].name if origin else None)
+""", a, args=json.dumps(inventories["imports"]["rows"]))
+        human = subprocess.check_output([binary, "imports", "--target", a, "--limit", "1"], cwd=workspace, env=env, text=True)
+        assert "type library" in human.lower() and "runtime library" in human
+        for command, field in (("functions", "name"), ("imports", "name"), ("strings", "value")):
+            whole = inventories[command]
+            pattern = whole["rows"][0][field][:4].upper()
+            expected = [row for row in whole["rows"] if pattern.casefold() in row[field].casefold()]
+            filtered = payload(cli(command, "--target", a, "--match", pattern, "--limit", "10000"))
+            assert filtered["rows"] == expected and filtered["page"]["total"] == len(expected)
+            assert filtered["total_available"] == whole["page"]["total"]
+            empty = cli(command, "--target", a, "--match", "binja_no_such_inventory_row")
+            assert payload(empty)["rows"] == [] and empty["stdout"]["text"].endswith("0 rows\n")
+        import re
+        expression = '^' + re.escape(name) + '$'
+        filtered = payload(cli("functions", "--target", a, "--regex", expression))
+        assert filtered["rows"] == [row for row in inventories["functions"]["rows"] if row["name"] == name]
+        bad = cli("functions", "--target", a, "--regex", "[", code=1)
+        assert "Invalid regular expression" in bad["error"] and not bad.get("traceback")
+        for arguments in (("functions", "--match", "main", "--regex", "main"), ("functions", "--sort", "invalid"),
+                ("info", "--limit", "0"), ("imports", "--offset", "-1"), ("strings", "--limit", "0")):
+            invalid = subprocess.run([binary, *arguments], cwd=workspace, env=env, text=True, capture_output=True)
+            assert invalid.returncode == 2 and "Request " not in invalid.stderr
 
         phase("Queue receipts, pending cap, cancellation, expiry, and listing")
         release = workspace / "release-worker"

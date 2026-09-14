@@ -1084,3 +1084,68 @@ increases; and checks data sources inside functions, exact interior addresses,
 ambiguity, pagination, text recovery, no-wait requests and empty-result warnings.
 Existing inspection, transport, save/reopen and shutdown checks still pass.
 Verification covered x86-64 ELF binaries. Stopped the checkout GUI cleanly.
+
+## 2026-09-13 — Inventory commands and reference output polish
+
+Implemented fm4yyw's `info`, `functions`, `imports` and `strings` with distinct
+request kinds on the existing worker. They reuse the resolver module's page
+helpers and the 64-row default. `inventory.py` shares only text filtering and
+page headers; command scripts retain their native API queries and rendering.
+No envelope changes, cursor state, new dependencies or peer code were added.
+The guide's Inventory Python recipe was replaced with command usage and the
+typed contract was extended in design.md.
+
+First applied the two live-review fixes: `refs` now includes nullable `to_symbol`
+from the native exact-address symbol lookup, and text places its name beside
+the destination address. Sample's first edge now reads
+`0x40125b -> __builtin_memset @ 0x4043f8`. Empty totals print `0 rows`; requests
+past the end of a nonempty list retain the offset/total wording.
+
+The inventory decisions are explicit: functions default to address order;
+size is descending and name is lexicographic, with deterministic ties.
+`--match` is a case-insensitive substring over displayed names or decoded string
+values. Functions alternatively accept `--regex PATTERN`, using Python regex
+search and its native case rules. Filtered results carry both `page.total` and
+`total_available`. Info's scalar summary repeats on each page, while libraries,
+segments and sections share one tagged row sequence and one offset. Segment
+file offsets are distinguished from virtual addresses and all ends are exclusive.
+Import rows preserve the recipe's separate stub/slot/external representations
+and `lookup_imported_object_library` attribution, with an explicit warning that
+the type library does not identify the runtime provider. Strings retain full
+native decoded values and byte lengths, quoting control characters in text.
+
+Started Binary Ninja 6.0.10601 Personal successfully in the checkout's `.binja`.
+Opened `temp/samples/a/sample` and the existing scratch copy `temp/typed/bash`;
+neither executable was run. Compared every inventory row with independent
+native queries, including the retired import recipe's type-library lookup.
+Reconstructed all inventories through default-sized pages and compared all
+three function sort orders against the full native function set:
+
+| Binary | Functions | Import symbols | Strings | Libraries / segments / sections |
+| --- | ---: | ---: | ---: | --- |
+| sample | 29 | 22 | 52 | 4 / 7 / 27 |
+| bash | 2,046 | 650 | 5,785 | 2 / 7 / 27 |
+
+Bash's largest function is `read_token.constprop.0`, 17,199 `total_bytes`.
+`functions --regex '^read_'` found 11; `imports --match MALLOC` found three;
+`strings --match ERROR` found 81, all matching native values. The malloc slot
+at `0x4f2c38` reports type library `libc_x86_64.so.6`, while its stub and external
+symbol report unknown, as in the recipe.
+
+Measured every 64-row page. Bash's maximum stdout/result sizes were
+2,497/4,754 bytes for info, 2,876/5,109 for functions, 4,806/7,089 for imports,
+and 45,810/48,372 for strings. Two string pages spill beyond the 16,384-byte
+inline threshold; retrieval preserves their full values. Retained 64 rows and
+the existing artifact behavior. All sample pages stayed inline (maximum JSON
+4,943 bytes). Native inventories, page reconstruction and size/filter evidence
+are under `temp/inventory/`.
+
+All six Rust tests and Python execution/protocol/API-index checks (6/5/4) passed.
+`nix build` succeeded, followed by
+`python3 tests/smoke.py --binja ./result/bin/binja --sample temp/samples/a/sample`
+in `/tmp/binja-smoke-uy536b1g`. Added checks for destination symbols and empty
+footers; native inventory contents and type libraries; all function sort orders;
+substring/regex filtering, invalid patterns and flag conflicts; pagination,
+no-wait recovery and human output. Existing screenshot/input, reference,
+inspection, transport and save/reopen checks passed. Verification covered
+x86-64 ELF binaries. Stopped the checkout GUI cleanly. No follow-ups were needed.

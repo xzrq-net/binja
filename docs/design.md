@@ -54,7 +54,8 @@ returns an error without changing the execution outcome.
 
 Requests contain `protocol: 3`, `generation`, `op`, and operation parameters.
 `submit` carries `spec` with `id`, `kind` (`py`, `open`, `save`, `decompile`, `il`,
-`disasm`, `xrefs`, `refs`, or `callers`; default `py`), `source`, `filename`, `args`, `target`, `no_target`, and `allow_incomplete`.
+`disasm`, `xrefs`, `refs`, `callers`, `info`, `functions`, `imports`, or `strings`;
+default `py`), `source`, `filename`, `args`, `target`, `no_target`, and `allow_incomplete`.
 `submit` and `request` accept `wait`, default 0, as finite nonnegative seconds
 within the server platform's timeout range. The wait budget starts after
 admission/lookup; it is not an end-to-end CLI deadline.
@@ -240,8 +241,9 @@ duplicate result printing for these kinds in human mode, including recovered
 requests. The envelope and spill boundary are unchanged. Text and JSON artifacts
 remain independently readable; command-specific output stays in `result` and stdout.
 
-Function and reference pages use `--offset/--limit` (64 rows by default), reporting
-returned/total counts and next offset. Linear pages continue by address and
+Typed listings use `--offset/--limit` (64 rows by default), reporting
+returned/total counts and next offset. Empty totals print `0 rows`; an offset
+beyond a nonempty list reports its position and total. Linear pages continue by address and
 remaining count/end. Pagination rerenders the current view, with no stored
 cursors; edits or reanalysis require restarting pagination. Inspection rows carry
 native hexadecimal `address` and `text`, plus nullable `il_index` for IL or `bytes` for
@@ -255,7 +257,9 @@ semantic scoping.
 interior addresses stay interior. It lists inbound references with rows
 `{kind, address, functions: [{name, start}]}`; data sources can have no containing
 function. `refs FUNCTION` lists outbound references whose sources lie in analyzed
-basic blocks, excluding gaps, as `{kind, address, to}`. `kind` is `code` or `data`
+basic blocks, excluding gaps, as `{kind, address, to, to_symbol}`. `to_symbol` is
+the destination's native symbol name or null; text shows the name beside its
+address. `kind` is `code` or `data`
 according to the reference source, not its destination; neither implies a call.
 Both preserve native auto and user references.
 
@@ -273,6 +277,25 @@ relation (`reference`/`call`), counts, rows and page metadata; `callers` also re
 import symbols and excluded stubs. Counts always cover the full query. Reference
 pages order code before data, then source and destination; caller pages order
 by function start/name, then call-site address. Pagination recomputes the query.
+
+Inventories use the same page helpers, with `inventory.py` sharing text filters
+and page headers. `functions` rows are `{address, name, total_bytes}`, sorted by
+address (default), name, or descending size with deterministic ties. `imports`
+rows are `{address, kind, name, type_library}`, one per native stub/slot/external
+symbol, ordered by name/address/kind; attribution comes from
+`lookup_imported_object_library` and does not identify the runtime provider.
+`strings` rows are `{address, type, length, value}`, ordered by address/type/length;
+length is bytes and value is the full native decoded string, escaped in text.
+These lists filter before paging and report `total_available` alongside the
+matching `page.total`. Substring matching is case-insensitive; functions also
+accept a mutually exclusive Python regex. Query options remain in the result.
+
+`info` returns path, view type, architecture/platform, entry point and function
+count, plus category counts. Libraries, segments and sections form one paged
+`rows` list tagged by `kind`, in that order; segments and sections use address
+order. Segment rows include permissions and explicitly named file offsets and
+lengths; section rows include native semantics. All range ends are exclusive.
+No unbounded inventory arrays sit outside the page contract.
 
 ## Execution and recovery
 

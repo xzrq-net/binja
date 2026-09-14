@@ -70,7 +70,8 @@ def reference_listing(request, result, rows, offset, limit):
                     functions = ", ".join(f"{f['name']} @ {f['start']}" for f in row["functions"])
                     print(f"{row['address']}  from {functions or '(no containing function)'}")
                 else:
-                    print(f"{row['address']} -> {row['to']}")
+                    destination = f"{row['to_symbol']} @ {row['to']}" if row["to_symbol"] else row["to"]
+                    print(f"{row['address']} -> {destination}")
         if direction == "inbound":
             print("Zero references is not proof of no callers; unresolved indirect calls may be absent.")
     print_page(result["page"])

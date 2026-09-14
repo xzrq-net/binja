@@ -166,7 +166,16 @@ fn output(v: &Value) -> Result<()> {
         if !result.is_null()
             && !matches!(
                 text(v, "kind"),
-                "decompile" | "il" | "disasm" | "xrefs" | "refs" | "callers"
+                "decompile"
+                    | "il"
+                    | "disasm"
+                    | "xrefs"
+                    | "refs"
+                    | "callers"
+                    | "info"
+                    | "functions"
+                    | "imports"
+                    | "strings"
             )
         {
             println!("{}", serde_json::to_string_pretty(result)?);

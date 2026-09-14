@@ -10,7 +10,11 @@ for block in function.basic_blocks:
             edges.add(("code", source, destination))
         for destination in bv.get_data_refs_from(source):
             edges.add(("data", source, destination))
-rows = [dict(kind=kind, address=hex(source), to=hex(destination)) for kind, source, destination in sorted(edges)]
+rows = []
+for kind, source, destination in sorted(edges):
+    symbol = bv.get_symbol_at(destination)
+    rows.append(dict(kind=kind, address=hex(source), to=hex(destination),
+        to_symbol=symbol.full_name if symbol else None))
 result = dict(query=args["function"], function=function_info(function), addresses=[hex(function.start)],
     direction="outbound", relation="reference",
     counts=dict(code_references=sum(kind == "code" for kind, _, _ in edges),

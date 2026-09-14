@@ -1,7 +1,7 @@
 # binja
 
 Use binja for static analysis with Binary Ninja Personal. Run commands from the
-analysis workspace. Typed commands cover inspection and reference traversal;
+analysis workspace. Typed commands cover inspection, references and inventories;
 Python is the backstop.
 A GUI session persists between commands, executing requests in its bundled interpreter.
 
@@ -220,7 +220,8 @@ binja callers malloc --offset 64
 including source addresses and their functions (or no containing function).
 Exact function names select their start; an address or `symbol+offset` stays at
 that address. `refs FUNCTION` lists outbound source/destination pairs within the
-function's analyzed basic blocks, excluding gaps. Code/data classify the **source**:
+function's analyzed basic blocks, excluding gaps, with destination symbol names
+when available. Code/data classify the **source**:
 an instruction referencing a global variable is a code reference. References
 include non-call uses; use `callers` for resolved calls.
 
@@ -239,31 +240,46 @@ restart pagination after edits or reanalysis.
 
 ### Inventory
 
-`total_bytes` sums basic-block lengths, including overlaps; it is neither an
-instruction count nor the span between a function's lowest and highest address.
-Library dependencies are file-wide. The per-symbol lookup below identifies the
-**type library** used for its type, when known; it does not prove which runtime
-library supplies the symbol.
-
 ```sh
-binja py <<'PY'
-print(f"entry {bv.entry_point:#x}; {len(bv.functions)} functions")
-print("dependencies: " + (", ".join(bv.libraries) or "unknown"))
-for f in sorted(bv.functions, key=lambda f: f.total_bytes, reverse=True)[:10]:
-    print(f"{f.start:#x}  {f.total_bytes} bytes  {f.name}")
-kinds = {bn.SymbolType.ImportedFunctionSymbol, bn.SymbolType.ImportAddressSymbol,
-         bn.SymbolType.ExternalSymbol}
-for s in sorted(bv.get_symbols(), key=lambda s: (s.full_name, s.address)):
-    if s.type in kinds:
-        origin = bv.lookup_imported_object_library(s.address)
-        library = origin[0].name if origin else "unknown"
-        print(f"{s.address:#x}  {s.type.name}  {s.full_name}  type library: {library}")
-PY
+binja info
+binja functions --sort size --limit 10
+binja functions --match parse --sort name
+binja functions --regex '^(parse|read)_' --offset 64
+binja imports --match malloc
+binja strings --match error
 ```
+
+`info` summarizes the selected file/view, architecture, platform, entry point
+and function count. Its rows list libraries, then segments, then sections, with
+one shared `--offset/--limit` window. Range ends are exclusive; segment file
+offsets are labeled separately from virtual addresses.
+
+`functions` lists address, name and `total_bytes`: the sum of basic-block lengths,
+including overlaps, not an instruction count or address span. `--sort address`
+is the default; `--sort size` puts the largest first and `--sort name` orders
+names lexicographically. `--match SUBSTRING` is case-insensitive; the alternative
+`--regex PATTERN` uses Python regex search on displayed names, case-sensitive
+unless the pattern includes `(?i)`.
+
+`imports` lists each stub, address slot and external symbol separately, ordered
+by name/address. Its **type library** attribution identifies the library used
+for the symbol's type, when known; it does not establish which runtime library
+supplies the symbol. Dependency libraries in `info` are file-wide.
+
+`strings` lists native analyzed strings by address, with encoding and byte length.
+Text quotes and escapes decoded values to keep each string on one row; JSON
+retains the decoded value. `imports` and `strings` also accept case-insensitive
+`--match` on displayed names and decoded values, respectively.
+
+All inventories default to 64 rows with `--offset/--limit`. Filters and sorting
+apply before pagination; filtered lists report the matching total and unfiltered
+count. Repeat the same options with the footer's next offset to continue, and
+restart after edits or reanalysis. Long strings can spill a page to artifacts; values
+are not shortened to fit inline.
 
 ## Requests and recovery
 
-Python, open, save and code inspection commands print a request ID to stderr before submitting.
+Python, open, save and typed analysis commands print a request ID to stderr before submitting.
 They normally wait up to 30 seconds after admission. `--wait` is not an
 end-to-end command deadline. A client wait expiry exits 2 and leaves the request queued
 or running; retrieve the existing request instead of repeating it:

@@ -151,6 +151,9 @@ def page_rows(items, offset, limit):
 
 
 def print_page(page):
+    if page["total"] == 0:
+        print("0 rows")
+        return
     end = page["offset"] + page["returned"]
     span = f"{page['offset']}-{end - 1}" if page["returned"] else f"none at offset {page['offset']}"
     footer = f"rows {span} of {page['total']}"

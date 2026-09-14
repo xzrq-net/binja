@@ -215,6 +215,61 @@ enum Commands {
         #[command(flatten)]
         execution: Execution,
     },
+    #[command(about = "Summarize a view and page its libraries, segments, and sections")]
+    Info {
+        #[command(flatten)]
+        page: Page,
+        #[command(flatten)]
+        execution: Execution,
+    },
+    #[command(about = "List functions by address, name, or size (largest first)")]
+    Functions {
+        #[arg(
+            long = "match",
+            value_name = "SUBSTRING",
+            conflicts_with = "regex",
+            help = "Case-insensitive substring of the displayed name"
+        )]
+        pattern: Option<String>,
+        #[arg(
+            long,
+            value_name = "PATTERN",
+            help = "Python regex over the displayed name; case-sensitive unless (?i) is used"
+        )]
+        regex: Option<String>,
+        #[arg(long, default_value = "address", value_parser = ["size", "address", "name"])]
+        sort: String,
+        #[command(flatten)]
+        page: Page,
+        #[command(flatten)]
+        execution: Execution,
+    },
+    #[command(about = "List import symbols and their type libraries")]
+    Imports {
+        #[arg(
+            long = "match",
+            value_name = "SUBSTRING",
+            help = "Case-insensitive substring of the displayed name"
+        )]
+        pattern: Option<String>,
+        #[command(flatten)]
+        page: Page,
+        #[command(flatten)]
+        execution: Execution,
+    },
+    #[command(about = "List analyzed strings by address, with byte lengths and encodings")]
+    Strings {
+        #[arg(
+            long = "match",
+            value_name = "SUBSTRING",
+            help = "Case-insensitive substring of the decoded string"
+        )]
+        pattern: Option<String>,
+        #[command(flatten)]
+        page: Page,
+        #[command(flatten)]
+        execution: Execution,
+    },
     #[command(about = "List pending and newest five finished requests, plus cap rejections")]
     Requests {
         #[arg(long, help = "Include full finished history")]
@@ -507,6 +562,47 @@ fn run(cli: &Cli) -> Result<i32> {
                     args["count"] = json!(count);
                     args["end"] = json!(end);
                     "disasm"
+                }
+                _ => unreachable!(),
+            };
+            let spec = command_script(&resources, kind, args)?;
+            (
+                submit(cli, &state, execution, spec)?,
+                kind,
+                execution.no_wait,
+            )
+        }
+        Commands::Info { page, execution }
+        | Commands::Functions {
+            page, execution, ..
+        }
+        | Commands::Imports {
+            page, execution, ..
+        }
+        | Commands::Strings {
+            page, execution, ..
+        } => {
+            let mut args = json!({"offset":page.offset,"limit":page.limit});
+            let kind = match &cli.command {
+                Commands::Info { .. } => "info",
+                Commands::Functions {
+                    pattern,
+                    regex,
+                    sort,
+                    ..
+                } => {
+                    args["match"] = json!(pattern);
+                    args["regex"] = json!(regex);
+                    args["sort"] = json!(sort);
+                    "functions"
+                }
+                Commands::Imports { pattern, .. } => {
+                    args["match"] = json!(pattern);
+                    "imports"
+                }
+                Commands::Strings { pattern, .. } => {
+                    args["match"] = json!(pattern);
+                    "strings"
                 }
                 _ => unreachable!(),
             };
