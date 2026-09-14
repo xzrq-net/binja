@@ -18,5 +18,5 @@ CLI. Recipes they asked for, in the packaged guide (`binja/guide.md`):
 Keep these as guide text unless `zbqnx2` turns one into a command.
 
 Also state plainly: one worker per session, so batch per-function work into a
-single script; parallel shells hide client overhead but add no throughput
+single script; parallel shells can hide client overhead but do not parallelize worker execution
 (closed `8vftez`).

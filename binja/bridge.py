@@ -1,4 +1,5 @@
 """Resident receiver loaded through the managed startup.py."""
+import math
 import os
 from pathlib import Path
 import socket
@@ -31,7 +32,7 @@ class Bridge:
                 state_dir=str(self.state), docs=config["vendor"] + "/api-docs", python=__import__("sys").version)
             if operation == "status":
                 result["targets"] = on_ui(self.targets.refresh)
-                result["requests"] = [{k: r[k] for k in ("id", "status", "target_snapshot")} for r in self.execution.list() if r["status"] not in ("completed", "failed", "cancelled")]
+                result["requests"] = [{k: r[k] for k in ("id", "status", "target_snapshot")} for r in self.execution.list()["requests"] if r["status"] not in ("completed", "failed", "cancelled")]
             return result
         if operation == "targets":
             return on_ui(self.targets.refresh)
@@ -50,19 +51,39 @@ class Bridge:
     def handle(self, connection):
         with connection:
             connection.settimeout(5)
-            response = dict(protocol=PROTOCOL, generation=self.generation)
+            envelope = dict(protocol=PROTOCOL, generation=self.generation)
             try:
-                response["data"] = self.dispatch(receive(connection))
-            except Exception as exc:
-                response["error"] = f"{type(exc).__name__}: {exc}"
-            try:
+                request = receive(connection)
+                operation = request["op"]
+                seconds = request.get("wait", 0)
+                if (isinstance(seconds, bool) or not isinstance(seconds, (int, float))
+                        or not math.isfinite(seconds) or not 0 <= seconds <= threading.TIMEOUT_MAX - 5):
+                    raise Error("wait must be finite, nonnegative seconds within the platform timeout limit.")
+                if seconds and operation not in ("submit", "request"):
+                    raise Error("wait is only supported for submit and request.")
+                data = self.dispatch(request)
+                if operation == "submit":
+                    existing = data.pop("admission_existing", False)
+                    send(connection, dict(envelope, event="accepted", existing=existing,
+                        final=seconds == 0, data=data))
+                    if seconds == 0:
+                        return
+                if operation in ("submit", "request"):
+                    # Admission has already happened. Waiting never holds the UI thread.
+                    connection.settimeout(max(5, seconds + 5))
+                    data = self.execution.wait(data["id"], seconds)
+                response = dict(envelope, event="result", final=True, data=data)
                 send(connection, response)
-            except OSError:
-                pass
+            except Exception as exc:
+                try:
+                    send(connection, dict(envelope, event="result", final=True,
+                        error=f"{type(exc).__name__}: {exc}"))
+                except (OSError, Error):
+                    pass
 
     def serve(self):
         endpoint = self.state / "runtime/rpc.sock"
-        with socket.socket(socket.AF_UNIX) as listener:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as listener:
             listener.bind(str(endpoint))
             endpoint.chmod(0o600)
             listener.listen(16)

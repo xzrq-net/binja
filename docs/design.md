@@ -23,7 +23,8 @@ records experiments and their results.
 | Binary Ninja | Live BinaryViews, analysis, edits, and database serialization |
 | Packaged guide | Workflow and API lookup instructions |
 
-The CLI and plugin use JSON protocol version 2 (request target snapshot labels) over a filesystem Unix socket.
+The client, plugin, and supervisor use JSON protocol version 3 over filesystem
+Unix `SOCK_SEQPACKET` sockets.
 The external CLI never imports `binaryninja`: source text, arguments, and serialized
 results cross the process boundary. Scripts run in the distribution's bundled
 interpreter. There is no transfer of Python object proxies.
@@ -31,6 +32,51 @@ interpreter. There is no transfer of Python object proxies.
 Target enumeration and UI dispatch adapt code from banteg/bn, with its license
 notice retained in `licenses/`. The CLI requires no MCP server or separate
 agent-skill installation.
+
+## Wire protocol
+
+Each connection carries one operation. Each logical message is one UTF-8 JSON
+object split into packets: byte `0x01` followed by 1–32768 bytes of JSON, then a
+separate one-byte `0x00` end packet. Chunks may split a UTF-8 character; decode
+only after reassembly. EOF is an incomplete message, not a terminator. Reject
+unknown/empty data packets, packets larger than 32769 bytes (`MSG_TRUNC`), invalid
+JSON, and non-object messages. There is no newline delimiter, multiplexing, or
+application retransmission. Receivers enforce a deadline for the whole message.
+
+The serialized request envelope is bounded at 4 MiB; each response envelope at
+64 MiB. Bounds exclude packet tag bytes. Sources, including `-c`, stdin, and
+locally read files, remain inline snapshots. Large execution outputs still use
+artifacts; the larger response bound accommodates forensic history. Oversized
+submissions are rejected before admission. A response that exceeds its bound
+returns an error without changing the execution outcome.
+
+Requests contain `protocol: 3`, `generation`, `op`, and operation parameters.
+`submit` carries `spec` with `id`, `kind` (`py`, `open`, or `save`; default `py`),
+`source`, `filename`, `args`, `target`, `no_target`, and `allow_incomplete`.
+`submit` and `request` accept `wait`, default 0, as finite nonnegative seconds
+within the server platform's timeout range. The wait budget starts after
+admission/lookup; it is not an end-to-end CLI deadline.
+
+GUI replies contain `protocol`, `generation`, `event`, `final`, and either `data`
+or `error`. Submission first returns `event: "accepted"`, the admission snapshot
+in `data`, and `existing` to distinguish duplicate recovery from new admission.
+With `wait: 0`, that reply has `final: true` and ends the operation. With positive
+wait, it has `final: false`; the handler then waits on the worker condition and
+returns `event: "result", final: true` at termination or deadline. Other GUI
+operations return one final result. `request` waits without an admission event.
+A deadline response whose request is still unfinished includes
+`client_wait_expired: true` in `data`. The client adds a state-path-preserving
+recovery command and uses exit 2. Disconnect does not cancel accepted execution.
+
+All terminal transitions notify condition waiters under the scheduling lock.
+Waiting releases that lock and runs on a connection thread, never the UI thread.
+Client read deadlines must allow the server's deadline reply to arrive; transport
+failure is distinct from normal wait expiry. Nonwaiting handlers retain short
+I/O timeouts. Supervisor control operations use the same framing and identity
+checks, but return a single `{protocol, generation, data|error}` envelope.
+
+Protocol upgrades require session restart. No compatibility Python client is
+maintained alongside the replacement Rust client.
 
 ## Distribution and upgrades
 
@@ -147,7 +193,9 @@ the script. The guide documents size and retention limits.
 Request IDs belong to a GUI lifetime. The client emits IDs before submission
 for recovery after a disconnect or timeout. Duplicate IDs return the original
 record without replay. The acknowledgement follows the pre-submission ID receipt,
-so clients can distinguish acceptance and queue placement. Client wait expiry is
+so clients can distinguish acceptance and queue placement. Human acceptance
+receipts are useful only when `waits_behind` is non-null; queued status alone
+also describes an idle worker awaiting pickup. Client wait expiry is
 explicit in human and JSON output, with a recovery command; it does not cancel work.
 Elapsed seconds run from worker pickup (including readiness) or, for unstarted
 requests, submission. Listings lead with active and queued work and the newest five
@@ -155,9 +203,28 @@ finished records by completion time; `--all` includes all finished metadata.
 
 Request target descriptions are labeled `target_snapshot`, with stage `submission`
 or `open` (captured after load/attachment). They are not current target state.
-Metadata stays for the session; only the newest 64
-finished requests retain outputs and artifacts. Older records have
-`output_pruned: true`. A restart cannot establish an earlier outcome.
+Metadata and artifact files stay for the session. Only the newest 64 finished
+records retain inline output; older records have `output_pruned: true` and retain
+artifact references, byte counts, and stream truncation flags. Small outputs
+initially contain inline text/result; pruning exposes their existing backing
+files as artifact references. Large streams retain a 16 KiB preview in the full
+record as well as an artifact path and byte count. A new lifetime and completed
+shutdown retire artifacts after owned children have stopped; reusing a live
+session does not. A restart cannot establish an earlier outcome.
+
+The `requests` response is an object with `requests` rows, `finished_total`,
+`finished_shown`, `rejected_total`, and `rejections`. Rows retain kind, filename,
+truncated error, output-pruned flag, target snapshot, phase, and timestamps.
+`queue_wait_seconds` measures submission to worker pickup, or to now/termination
+for unstarted work. `execution_seconds` measures worker pickup to now/termination,
+including readiness; it is null for unstarted requests, including queued
+cancellations. `elapsed_seconds` remains available with its previous semantics.
+
+Cap-rejected attempts are separate from accepted records. A lifetime total counts
+all cap rejections; a ring retains the newest 64 events, oldest first. Each event
+has `id`, `time`, `reason: "pending_cap"`, `kind`, `filename`, `running` (ID or
+`"none"`), `queued`, and `pending_cap`. Duplicate recovery at capacity neither
+executes again nor counts as rejection. Invalid input is not a cap event.
 
 Cancellation can stop queued work or a pre-script analysis wait. It cannot safely
 interrupt running Python or native calls. Scripts are neither sandboxed nor
@@ -179,9 +246,13 @@ after a GUI crash requires a successful database save.
 
 `api search` and `api show` use an index built from the installed distribution's
 Python declarations and docstrings. Results include version and source locations;
-`api paths` locates bundled source and Sphinx documentation. Static lookup requires
-no GUI, license, or Binary Ninja imports in the CLI. Inherited members and native
-UI classes may require direct documentation inspection.
+`api paths` locates bundled source and Sphinx documentation. The index labels
+declaration `kind`, properties' `writable` status and
+`return_type`, and enum `members`. Members contain a name and source expression,
+plus `value` when statically literal; unresolved expressions are not evaluated.
+Setter declarations are folded into their property rather than indexed as a
+second symbol. Static lookup requires no GUI, license, or Binary Ninja imports
+in the CLI. Inherited members and native UI classes may require direct documentation inspection.
 
 `--help` points to `binja skill`, which prints a single packaged guide. The guide
 teaches working commands, target selection, API lookup, readiness, saving, and

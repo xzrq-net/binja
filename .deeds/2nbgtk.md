@@ -35,3 +35,11 @@ through the installed interface. Findings are filed as `r23mma`, `nvafxz`,
 the bounded subagent implementation review, and the fixes from those findings.
 Stress trial ran on 2026-09-13 against the queue change; findings filed as
 `vf2ttr`, `9353hf`, `ev7w2f`, `9wkssd`, `8vftez`.
+
+## Implementation handoff
+
+The earlier operator-approval paragraph is historical: trials have run and the
+user explicitly authorized the planned bounded adversarial review in phase C.
+It is not a new approval checkpoint. Phase A uses focused protocol/plugin
+checks; installed CLI smoke is migrated in B, followed by guide recipe
+validation and the scoped implementation review in C.

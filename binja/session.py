@@ -84,6 +84,15 @@ def terminate(process):
             process.wait()
 
 
+def retire_artifacts(state):
+    """Called only by the lifetime owner with no live GUI children."""
+    for old in (state / "artifacts").iterdir():
+        if old.is_dir() and not old.is_symlink():
+            shutil.rmtree(old)
+        else:
+            old.unlink()
+
+
 def serve(state, license_path):
     os.umask(0o077)
     config = build_config()
@@ -112,10 +121,7 @@ def serve(state, license_path):
         for name in ("Updates", "UpdateChannelList", "ReleaseNotes", "ExtensionManager", "ExternalResources", "Debuginfod", "WARP", "CollaborationServer"):
             settings["network.enable" + name] = False
         atomic_json(state / "bn/settings.json", settings)
-        # Request results belong to a GUI lifetime; startup retires its artifacts.
-        for old in (state / "artifacts").iterdir():
-            if old.is_dir() and not old.is_symlink():
-                shutil.rmtree(old)
+        retire_artifacts(state)
         env = os.environ.copy()
         for key in ("DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "PYTHONPATH", "PYTHONHOME", "LD_LIBRARY_PATH", "LD_PRELOAD", "BN_DISABLE_USER_SETTINGS"):
             env.pop(key, None)
@@ -130,7 +136,7 @@ def serve(state, license_path):
             "QT_QPA_PLATFORM": "wayland",
         })
         children = []
-        listener = socket.socket(socket.AF_UNIX)
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
         stopping = False
 
         def signal_stop(*_):
@@ -193,6 +199,7 @@ def serve(state, license_path):
             for child in reversed(children):
                 terminate(child)
             listener.close()
+            retire_artifacts(state)
             for name in ("rpc.sock", "control.sock", "wayland-0", "wayland-0.lock"):
                 (runtime / name).unlink(missing_ok=True)
 

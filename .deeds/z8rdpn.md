@@ -28,3 +28,14 @@ Keep the CLI surface and output identical unless a deed says otherwise, so the
 trial scripts in `temp/trials/runD/scripts/` remain a valid before/after
 benchmark. Package the binary through Nix in place of the Python entry point.
 Closes `vf2ttr` when done.
+
+## Implementation handoff
+
+Phase A protocol transition: protocol 3 uses 32 KiB data chunks tagged 0x01 and
+a 0x00 end packet; request/response bounds are 4/64 MiB. submit(wait>0) emits
+admission before its blocking result; request(wait) blocks on the worker
+condition. Exact envelopes are in docs/design.md. No Python client
+compatibility work was done. Rust CLI and hidden supervisor,
+packaging/devshell, live CLI smoke, and benchmark comparison remain in B.
+Baseline harness and raw results are under temp/phase-a/; reuse tight_loop.py
+with the same sample for comparison.

@@ -1,11 +1,10 @@
 """Serialized scripts, per-thread output capture, and generation-local recovery."""
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from contextlib import contextmanager
 import json
 from pathlib import Path
 import queue
 import re
-import shutil
 import sys
 import threading
 import time
@@ -16,6 +15,7 @@ from .targets import on_ui
 
 KEEP_RESULTS = 64
 MAX_PENDING = 8
+KEEP_REJECTIONS = 64
 OUTPUT_BYTES = 1024 * 1024
 RESULT_BYTES = 8 * 1024 * 1024
 INLINE_BYTES = 16 * 1024
@@ -69,7 +69,8 @@ class Output:
 
     def finish(self):
         self.stream.close()
-        value = {"text": self.path.read_bytes()[:INLINE_BYTES].decode("utf-8", errors="replace")}
+        value = {"text": self.path.read_bytes()[:INLINE_BYTES].decode("utf-8", errors="replace"),
+                 "bytes": self.size}
         if self.size > INLINE_BYTES:
             value["artifact"] = str(self.path)
         value["truncated"] = self.truncated
@@ -81,6 +82,9 @@ class Execution:
         self.bridge = bridge
         self.bn = bn
         self.lock = threading.RLock()
+        self.changed = threading.Condition(self.lock)
+        self.rejected_total = 0
+        self.rejections = deque(maxlen=KEEP_REJECTIONS)
         self.records = OrderedDict()
         self.work = queue.Queue()
         self.stopping = False
@@ -98,7 +102,12 @@ class Execution:
 
     def snapshot(self, record):
         value = {k: v for k, v in record.items() if not k.startswith("_")}
-        value["elapsed_seconds"] = max(0, value.get("finished", time.time()) - value.get("started", value["submitted"]))
+        end = value.get("finished", time.time())
+        started = value.get("started")
+        value["queue_wait_seconds"] = max(0, (started if started is not None else end) - value["submitted"])
+        value["execution_seconds"] = None if started is None else max(0, end - started)
+        value["output_pruned"] = value.get("output_pruned", False)
+        value["elapsed_seconds"] = value["execution_seconds"] if started is not None else value["queue_wait_seconds"]
         value["phase"] = value["status"] if value["status"] in TERMINAL else value.get("phase", value["status"])
         if record["status"] == "queued":
             pending = [r for r in self.records.values() if r["status"] not in TERMINAL]
@@ -114,6 +123,17 @@ class Execution:
                 return self.snapshot(self.records[request_id])
         raise Error("Unknown request ID; this is not proof that a submitted mutation ran or did not run. Do not blindly resubmit.")
 
+    def wait(self, request_id, seconds):
+        self.validate_id(request_id)
+        with self.changed:
+            if request_id not in self.records:
+                return self.get(request_id)
+            self.changed.wait_for(lambda: self.records[request_id]["status"] in TERMINAL, timeout=seconds)
+            value = self.snapshot(self.records[request_id])
+            if seconds > 0 and value["status"] not in TERMINAL:
+                value["client_wait_expired"] = True
+            return value
+
     def list(self, all_history=False):
         with self.lock:
             active = [r for r in self.records.values() if r["status"] not in TERMINAL]
@@ -122,9 +142,13 @@ class Execution:
                 key=lambda r: r["finished"], reverse=True)
             fields = ("id", "status", "target_snapshot", "target_snapshot_stage", "phase",
                 "allow_incomplete", "submitted", "started", "finished", "elapsed_seconds",
-                "queue_position", "waits_behind")
-            return [{k: v for k, v in self.snapshot(r).items() if k in fields}
+                "queue_position", "waits_behind", "kind", "filename", "error", "output_pruned",
+                "queue_wait_seconds", "execution_seconds")
+            rows = [{k: v for k, v in self.snapshot(r).items() if k in fields}
                 for r in active + (finished if all_history else finished[:5])]
+            return dict(requests=rows, finished_total=len(finished),
+                finished_shown=len(finished) if all_history else min(5, len(finished)),
+                rejected_total=self.rejected_total, rejections=list(self.rejections))
 
     def submit(self, spec):
         request_id = spec.get("id")
@@ -132,16 +156,23 @@ class Execution:
         if not isinstance(spec.get("source"), str) or not isinstance(spec.get("filename"), str):
             raise Error("Execution requires source text and a filename.")
 
+        if spec.get("kind", "py") not in ("py", "open", "save"):
+            raise Error("Request kind must be py, open, or save.")
+
         def check_duplicate():
             record = self.records.get(request_id)
             if record is not None:
-                return self.snapshot(record)
+                return dict(self.snapshot(record), admission_existing=True)
             if self.stopping:
                 raise Error("Session is shutting down; no more submissions accepted.")
             pending = [r for r in self.records.values() if r["status"] not in TERMINAL]
             if len(pending) >= MAX_PENDING:
                 running = next((r["id"] for r in pending if r["status"] != "queued"), "none")
                 queued = sum(r["status"] == "queued" for r in pending)
+                self.rejected_total += 1
+                self.rejections.append(dict(id=request_id, time=time.time(), reason="pending_cap",
+                    kind=spec.get("kind", "py"), filename=spec["filename"], running=running,
+                    queued=queued, pending_cap=MAX_PENDING))
                 raise Error(f"Request {request_id} was not accepted and will not execute: "
                     f"pending cap {MAX_PENDING}; running request: {running}; {queued} queued. "
                     "Safe to resubmit after capacity is available.")
@@ -158,6 +189,7 @@ class Execution:
                 return duplicate
             record = dict(id=request_id, status="queued", target_snapshot=target, target_snapshot_stage="submission",
                 allow_incomplete=bool(spec.get("allow_incomplete", False)), submitted=time.time(),
+                kind=spec.get("kind", "py"), filename=spec["filename"],
                 _spec=spec, _bv=bv)
             self.records[request_id] = record
             self.work.put(record)
@@ -173,6 +205,7 @@ class Execution:
                 raise Error("Only queued requests or readiness waits can be cancelled; running Python/native work cannot be interrupted safely.")
             record["status"] = "cancelled"
             record["finished"] = time.time()
+            self.changed.notify_all()
             return self.snapshot(record)
 
     def wait_ready(self, bv, record, before_execution=True):
@@ -224,7 +257,7 @@ class Execution:
         except (TypeError, ValueError) as exc:
             raise Error(f"result is not JSON serializable: {exc}. Return JSON values, not Binary Ninja objects; script edits remain applied.") from exc
         if size <= INLINE_BYTES:
-            return {"result": json.loads(path.read_text())}
+            return {"result": json.loads(path.read_text()), "result_bytes": size}
         return {"result_artifact": str(path), "result_bytes": size}
 
     def execute(self, record):
@@ -266,7 +299,9 @@ class Execution:
         finally:
             output, errors = stdout.finish(), stderr.finish()
             with self.lock:
-                record.update(outcome, stdout=output, stderr=errors, finished=time.time())
+                record.update(outcome, stdout=output, stderr=errors)
+                record.setdefault("finished", time.time())
+                self.changed.notify_all()
                 record.pop("phase", None)
                 record.pop("_bv", None)
                 record.pop("_spec", None)
@@ -285,6 +320,7 @@ class Execution:
                 # Artifact I/O can fail before script execution or during output finalization.
                 with self.lock:
                     record.update(status="failed", error=f"Request infrastructure error: {exc}"[-INLINE_BYTES:], finished=time.time())
+                    self.changed.notify_all()
             finally:
                 with self.lock:
                     record.pop("_bv", None)
@@ -294,7 +330,12 @@ class Execution:
                     if item["status"] in TERMINAL and not item.get("output_pruned")]
                 for key in finished[:-KEEP_RESULTS]:
                     item = self.records[key]
-                    for field in ("stdout", "stderr", "result", "result_artifact", "result_bytes"):
-                        item.pop(field, None)
+                    directory = self.bridge.state / "artifacts" / key
+                    if "result" in item:
+                        item["result_artifact"] = str(directory / "result.json")
+                        item.pop("result")
+                    for stream in ("stdout", "stderr"):
+                        if stream in item:
+                            item[stream] = {k: v for k, v in item[stream].items() if k != "text"}
+                            item[stream]["artifact"] = str(directory / (stream + ".txt"))
                     item["output_pruned"] = True
-                    shutil.rmtree(self.bridge.state / "artifacts" / key, ignore_errors=True)
