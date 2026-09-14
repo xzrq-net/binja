@@ -27,7 +27,25 @@ def wait_for(state, record, seconds):
     while record["status"] not in ("completed", "failed", "cancelled") and time.monotonic() < deadline:
         time.sleep(min(0.2, max(0, deadline - time.monotonic())))
         record = rpc(state, "request", id=record["id"])
+    if record["status"] not in ("completed", "failed", "cancelled"):
+        record["client_wait_expired"] = True
+        record["recovery_command"] = recovery_command(state, record["id"])
     return record
+
+
+def recovery_command(state, request_id):
+    return f"binja --state-dir {shlex.quote(str(state))} request {shlex.quote(request_id)} --wait 30"
+
+
+def request_summary(value):
+    target = value.get("target_snapshot")
+    target_text = (f"{target['handle']} ({target['view_type']}) {target['path']}" if target else "none")
+    summary = (f"{value['id']} {value['status']} — target snapshot "
+        f"({value.get('target_snapshot_stage', 'submission')}): {target_text}; "
+        f"phase: {value.get('phase', value['status'])}; elapsed: {value['elapsed_seconds']:.1f}s")
+    if value["status"] == "queued":
+        summary += f"; queue position: {value['queue_position']}; waits behind: {value['waits_behind'] or 'none (worker pickup)'}"
+    return summary
 
 
 def submit(state, args, source, filename, parameters, no_target=False):
@@ -39,6 +57,10 @@ def submit(state, args, source, filename, parameters, no_target=False):
     spec = dict(id=request_id, source=source, filename=filename, args=parameters,
         target=args.target, no_target=no_target, allow_incomplete=args.allow_incomplete)
     record = rpc(state, "submit", spec=spec)
+    receipt_fields = ("id", "status", "target_snapshot", "target_snapshot_stage", "phase",
+        "elapsed_seconds", "queue_position", "waits_behind")
+    receipt = dict(event="accepted", **{k: record[k] for k in receipt_fields if k in record})
+    print(json.dumps(receipt) if args.json else "Accepted: " + request_summary(record), file=sys.stderr, flush=True)
     if not args.no_wait:
         record = wait_for(state, record, args.wait)
     return record
@@ -49,8 +71,9 @@ def render(value, command, as_json, state):
         print(json.dumps(value, indent=2))
         return
     if isinstance(value, dict) and "id" in value:
-        target = value.get("target")
-        print(f"{value['id']} {value['status']}" + (f" — {target['handle']} ({target['view_type']}) {target['path']}" if target else ""))
+        print(request_summary(value))
+        if value.get("client_wait_expired"):
+            print("Client wait expired; execution continues.")
         if value.get("allow_incomplete"):
             print("Analysis: incomplete results explicitly allowed")
         for stream in ("stdout", "stderr"):
@@ -75,7 +98,7 @@ def render(value, command, as_json, state):
         if value.get("error"):
             print(value.get("traceback") or value["error"])
         if value["status"] in ("queued", "running", "waiting_analysis"):
-            print(f"Retrieve with: binja --state-dir {shlex.quote(str(state))} request {value['id']} --wait 30")
+            print(f"Retrieve with: {value.get('recovery_command') or recovery_command(state, value['id'])}")
     elif command == "targets":
         for target in value:
             dirty = "unsaved" if target["modified"] or target["analysis_changed"] else "clean"
@@ -85,11 +108,11 @@ def render(value, command, as_json, state):
             print("No open targets. Use binja open PATH.")
     elif command == "requests":
         for record in value:
-            print(f"{record['id']}  {record['status']}")
+            print(request_summary(record))
         if not value:
             print("No requests in this session.")
     elif command in ("start", "status"):
-        print(f"Binary Ninja {value['version']} — {value['display']}" + (" (reused)" if value.get("reused") else ""))
+        print(f"Binary Ninja {value['version']} — GUI on a private Wayland compositor" + (" (reused)" if value.get("reused") else ""))
         print(f"State: {value['state_dir']}\nGeneration: {value['generation']}")
         print(f"{len(value['targets'])} views; {len(value['requests'])} pending requests")
         for record in value["requests"]:
@@ -136,7 +159,8 @@ def main():
     save = sub.add_parser("save", help="save the intended target to an explicit .bndb path")
     save.add_argument("path")
     execution_options(save)
-    sub.add_parser("requests", help="list retained request states")
+    requests = sub.add_parser("requests", help="list pending requests and the newest five finished")
+    requests.add_argument("--all", action="store_true", help="include full finished history")
     request = sub.add_parser("request", help="retrieve an existing request; never re-execute it")
     request.add_argument("id")
     request.add_argument("--wait", type=float, default=0, metavar="SECONDS")
@@ -191,6 +215,8 @@ def main():
             value = submit(state, args, source, filename, json.loads(args.args), args.no_target)
         elif args.command == "request":
             value = wait_for(state, rpc(state, "request", id=args.id), args.wait)
+        elif args.command == "requests":
+            value = rpc(state, "requests", all=args.all)
         elif args.command == "cancel":
             value = rpc(state, "cancel", id=args.id)
         elif args.command in ("start", "stop"):

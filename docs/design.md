@@ -23,7 +23,7 @@ records experiments and their results.
 | Binary Ninja | Live BinaryViews, analysis, edits, and database serialization |
 | Packaged guide | Workflow and API lookup instructions |
 
-The CLI and plugin use a versioned JSON protocol over a filesystem Unix socket.
+The CLI and plugin use JSON protocol version 2 (request target snapshot labels) over a filesystem Unix socket.
 The external CLI never imports `binaryninja`: source text, arguments, and serialized
 results cross the process boundary. Scripts run in the distribution's bundled
 interpreter. There is no transfer of Python object proxies.
@@ -124,7 +124,13 @@ separately. A universal address schema is unnecessary.
 
 ## Execution and recovery
 
-The plugin serializes scripts on one worker. UI calls run on the main thread via
+The plugin serializes scripts on one worker. Admission is capped at 8 unfinished
+requests, including the active request. Rejection occurs before recording the ID
+and explicitly guarantees no execution, so that rejected submission can be retried.
+Duplicate accepted IDs still return their existing record even at capacity.
+Receipts expose queue position, immediate unfinished predecessor, and retained
+target snapshot. Queue observations are captured under the scheduling lock.
+UI calls run on the main thread via
 `on_ui`; analysis waits stay on the worker. Status and request inspection remain
 available during execution, subject to the GUI being responsive.
 
@@ -140,7 +146,16 @@ the script. The guide documents size and retention limits.
 
 Request IDs belong to a GUI lifetime. The client emits IDs before submission
 for recovery after a disconnect or timeout. Duplicate IDs return the original
-record without replay. Metadata stays for the session; only the newest 64
+record without replay. The acknowledgement follows the pre-submission ID receipt,
+so clients can distinguish acceptance and queue placement. Client wait expiry is
+explicit in human and JSON output, with a recovery command; it does not cancel work.
+Elapsed seconds run from worker pickup (including readiness) or, for unstarted
+requests, submission. Listings lead with active and queued work and the newest five
+finished records by completion time; `--all` includes all finished metadata.
+
+Request target descriptions are labeled `target_snapshot`, with stage `submission`
+or `open` (captured after load/attachment). They are not current target state.
+Metadata stays for the session; only the newest 64
 finished requests retain outputs and artifacts. Older records have
 `output_pruned: true`. A restart cannot establish an earlier outcome.
 

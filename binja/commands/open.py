@@ -27,6 +27,8 @@ else:
         loaded.file.close()
         raise
     loaded.update_analysis()
-request["target"] = target
+with bridge.execution.lock:
+    request["target_snapshot"] = target
+    request["target_snapshot_stage"] = "open"
 bridge.execution.wait_ready(loaded, request, before_execution=False)
 result = on_ui(lambda: bridge.targets.describe(loaded))

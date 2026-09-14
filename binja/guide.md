@@ -23,10 +23,10 @@ directory, pass `--state-dir /absolute/path/to/.binja` on each command. Selectio
 by this path; binja does not search parent directories or other running instances.
 `status` reports the resolved path, live views, and pending requests.
 
-`start` starts or reuses that session on a private Wayland compositor. The default
-license is `~/.binaryninja/license.dat`; `start --license PATH` selects another.
-Restart sessions after upgrading the package. Logs are in the session's `logs/`
-directory. Keep session state out of version control.
+`start` starts or reuses a GUI on a private Wayland compositor with a headless
+backend. The default license is `~/.binaryninja/license.dat`; `start --license PATH`
+selects another. Restart sessions after upgrading the package. Logs are in the
+session's `logs/` directory. Keep session state out of version control.
 
 `open` accepts a binary or existing BNDB. Save at meaningful work boundaries and
 before stopping. `save PATH.bndb` requires a destination outside session state;
@@ -99,8 +99,8 @@ use `on_ui` only for GUI calls. Raw views have no analysis pipeline.
 ## Request recovery
 
 Python, open, and save commands print a request ID to stderr before submitting.
-They normally wait up to 30 seconds. A timeout exits 2 and leaves execution
-running; retrieve the existing request instead of repeating it:
+They normally wait up to 30 seconds. A client wait expiry exits 2 and leaves the
+request queued or running; retrieve the existing request instead of repeating it:
 
 ```sh
 binja py --file slow_script.py --no-wait
@@ -110,8 +110,28 @@ binja cancel QUEUED_REQUEST_ID
 ```
 
 Replace the placeholders with returned IDs. `--no-wait` returns submission status
-immediately. `--json` puts one JSON result on stdout and a JSON submission receipt
-on stderr. Failed or cancelled requests exit 1. Status and request
+immediately. After acceptance, the receipt names the target snapshot, phase, and
+elapsed time. Queued receipts include a one-based queue position and the immediately
+preceding unfinished request (`waits_behind`); position 1 with no predecessor means
+waiting for worker pickup. Positions are live observations, not reservations.
+Cancel still removes queued work from execution.
+
+The serial worker accepts at most 8 unfinished requests, including the running
+request (normally one running plus seven queued). At the cap, rejection explicitly
+says the request was not accepted and will not execute, names the running request
+and queued count, and is safe to resubmit once capacity is available.
+
+`requests` lists running/readiness-waiting work first, then queued work in order,
+then the five most recently finished requests. `requests --all` includes full
+history in the same order. Rows include ID, target snapshot, phase, and elapsed
+seconds: time since worker pickup for started requests, otherwise since submission;
+finished requests stop the clock.
+
+`--json` puts one JSON result on stdout. Stderr carries a `submitting` event before
+RPC and an `accepted` receipt with the returned request state after acknowledgement.
+A client wait expiry adds `client_wait_expired: true` and `recovery_command` to the
+stdout record; human output names the expiry and prints the same recovery command.
+Failed or cancelled requests exit 1. Status and request
 inspection remain available during worker execution.
 
 After a disconnect, inspect the printed ID. An unknown ID does not prove the script
@@ -120,7 +140,13 @@ again. Do not automatically repeat mutations.
 Cancellation applies to queued requests and pre-script analysis waits; running
 Python/native work cannot safely be interrupted.
 
-Request metadata (ID, status, target, timestamps, and truncated error/traceback)
+Request records call the retained target description `target_snapshot`, with
+`target_snapshot_stage: "submission"`. For `open`, it is initially null and is
+captured after loading/attaching the view, with stage `"open"`. Snapshot paths and
+analysis states do not track later saves or analysis progress; use `targets` for
+current state and the command's `result` for its outcome.
+
+Request metadata (ID, status, target snapshot, timestamps, and truncated error/traceback)
 stays available for the session. Only the newest 64 finished requests retain
 outputs and artifacts; older records have `output_pruned: true` and no output
 fields. Each output stream retains up to 1 MiB, with a truncation flag; JSON

@@ -33,10 +33,12 @@ def main():
         shutil.copy2(options.sample, sample)
     original_hash = hashlib.sha256(sample_a.read_bytes()).hexdigest()
 
-    def cli(*args, code=0, stdin=None):
+    def cli(*args, code=0, stdin=None, receipts=None):
         completed = subprocess.run([binary, "--json", *map(str, args)], cwd=workspace,
             env=env, input=stdin, text=True, capture_output=True, timeout=90)
         assert completed.returncode == code, (args, completed.returncode, completed.stdout, completed.stderr)
+        if receipts is not None:
+            receipts.extend(json.loads(line) for line in completed.stderr.splitlines())
         return json.loads(completed.stdout)
 
     def py(source, target=None, code=0, **flags):
@@ -80,6 +82,7 @@ def main():
         assert cli("targets") == []
         assert "No live target" in py("result = bv", code=1)["error"]
         opened_a = cli("open", sample_a)
+        assert opened_a["target_snapshot_stage"] == "open"
         a = opened_a["result"]["handle"]
         assert opened_a["result"]["analysis"] == "IdleState"
         assert py("result = bv.file.filename")["result"] == str(sample_a)
@@ -104,17 +107,67 @@ result = bv.file.filename
         assert py(focus_switch, b, args=json.dumps({"path": str(sample_a)}))["result"] == str(sample_b)
         assert py("result = bv.file.filename", "active")["result"] == str(sample_a)
 
-        phase("Target retention across queued requests, GUI focus, and another client")
-        slow = py("import time; time.sleep(1); result = bv.file.filename", a, no_wait=True)
-        queued = py("result = bv.file.filename", a, no_wait=True)
-        assert py("result = bv.file.filename", b, no_wait=True)["target"]["handle"] == b
+        phase("Queue receipts, pending cap, cancellation, expiry, and listing")
+        release = workspace / "release-worker"
+        slow = py("import time\nfrom pathlib import Path\ndeadline = time.monotonic() + 60\nwhile not Path(args['release']).exists() and time.monotonic() < deadline: time.sleep(.05)\nresult = bv.file.filename",
+            a, no_wait=True, args=json.dumps({"release": str(release)}))
+        expired = cli("request", slow["id"], "--wait", ".2", code=2)
+        assert expired["status"] == "running" and expired["elapsed_seconds"] > 0
+        assert expired["client_wait_expired"] is True
+        assert str(state) in expired["recovery_command"] and slow["id"] in expired["recovery_command"]
+        receipts = []
+        queued = cli("py", "-c", "result = bv.file.filename", "--target", a, "--wait", ".01", code=2, receipts=receipts)
+        accepted = receipts[-1]
+        assert accepted["event"] == "accepted" and accepted["status"] == "queued"
+        assert accepted["queue_position"] == 1 and accepted["waits_behind"] == slow["id"]
+        assert accepted["target_snapshot"]["handle"] == a
+        assert queued["client_wait_expired"] and queued["recovery_command"]
+        human_id = session["generation"] + ":rhumanqueue"
+        human = subprocess.run([binary, "py", "-c", "result = bv.file.filename", "--target", b,
+            "--request-id", human_id, "--wait", ".01"], cwd=workspace, env=env,
+            text=True, capture_output=True, timeout=10)
+        assert human.returncode == 2
+        assert "queue position: 2" in human.stderr and queued["id"] in human.stderr
+        assert b in human.stderr and "target snapshot (submission)" in human.stderr
+        assert "Client wait expired" in human.stdout and "Retrieve with:" in human.stdout
+        extras = [py("result = bv.file.filename", a, no_wait=True) for _ in range(4)]
+        extras.append(py("bv.set_comment_at(bv.entry_point, 'must not run')", a, no_wait=True))
+        pending = [slow, queued, {"id": human_id}, *extras]
+        rejected_id = session["generation"] + ":rcaprejected"
+        rejection = py("raise AssertionError('must not execute')", a, no_wait=True,
+            request_id=rejected_id, code=1)["error"]
+        assert "not accepted and will not execute" in rejection
+        assert slow["id"] in rejection and "7 queued" in rejection and "Safe to resubmit" in rejection
+        duplicate = py("raise AssertionError('must not replay')", a, no_wait=True, request_id=slow["id"])
+        assert duplicate["id"] == slow["id"] and duplicate["status"] == "running"
+        human_rejection = subprocess.run([binary, "py", "-c", "result = 0", "--target", a, "--no-wait"],
+            cwd=workspace, env=env, text=True, capture_output=True, timeout=10)
+        assert human_rejection.returncode == 1
+        assert "not accepted and will not execute" in human_rejection.stderr
+        assert slow["id"] in human_rejection.stderr and "7 queued" in human_rejection.stderr
+        listing = cli("requests")
+        assert [r["id"] for r in listing[:8]] == [r["id"] for r in pending]
+        assert len(listing) == 13
+        assert all(r["status"] in ("completed", "failed", "cancelled") for r in listing[8:])
+        assert [r["finished"] for r in listing[8:]] == sorted((r["finished"] for r in listing[8:]), reverse=True)
+        human_listing = subprocess.check_output([binary, "requests"], cwd=workspace, env=env, text=True)
+        assert human_listing.splitlines()[0].startswith(slow["id"])
+        assert "phase: executing" in human_listing and "elapsed:" in human_listing and a in human_listing
+        full = cli("requests", "--all")
+        assert len(full) > len(listing) and rejected_id not in {r["id"] for r in full}
+        assert all("phase" in r and "elapsed_seconds" in r and "target_snapshot" in r for r in listing)
         assert "Outstanding" in cli("stop", code=1)["error"]
         assert "Only queued" in cli("cancel", slow["id"], code=1)["error"]
-        cancelled = py("bv.set_comment_at(bv.entry_point, 'must not run')", a, no_wait=True)
-        assert cli("cancel", cancelled["id"], code=1)["status"] == "cancelled"
+        assert cli("cancel", extras[-1]["id"], code=1)["status"] == "cancelled"
+        retry = py("result = 'accepted after cancellation'", a, no_wait=True, request_id=rejected_id)
+        assert retry["queue_position"] == 7 and retry["waits_behind"] == extras[-2]["id"]
         assert cli("status")["requests"]
+        release.touch()
         assert retrieve(slow)["result"] == str(sample_a)
         assert retrieve(queued)["result"] == str(sample_a)
+        assert cli("request", human_id, "--wait", "20")["result"] == str(sample_b)
+        assert retrieve(retry)["result"] == "accepted after cancellation"
+        assert len(cli("requests")) == 5
 
         phase("Analysis readiness at execution time and explicit override")
         hold = py("import time; time.sleep(.5); bv.set_analysis_hold(True)", a, no_wait=True)
@@ -145,7 +198,7 @@ result = bv.file.filename
         request_id = session["generation"] + ":rdisconnect"
         source = "import time; time.sleep(.3); bv.set_comment_at(bv.entry_point, bv.get_comment_at(bv.entry_point) + 'once'); result = bv.get_comment_at(bv.entry_point)"
         spec = dict(id=request_id, source=source, filename="<disconnect probe>", args={}, target=a, no_target=False, allow_incomplete=False)
-        wire = dict(protocol=1, generation=session["generation"], op="submit", spec=spec)
+        wire = dict(protocol=2, generation=session["generation"], op="submit", spec=spec)
         with socket.socket(socket.AF_UNIX) as connection:
             connection.connect(str(state / "runtime/rpc.sock"))
             connection.sendall(json.dumps(wire).encode() + b"\n")
@@ -165,6 +218,8 @@ result = bv.file.filename
         assert "Unsaved" in cli("stop", code=1)["error"]
         database = workspace / "analysis.bndb"
         saved = retrieve(cli("save", database, "--target", a, "--no-wait"))
+        assert saved["target_snapshot"]["path"] == str(sample_a)
+        assert saved["target_snapshot_stage"] == "submission"
         assert saved["result"]["saved"]["path"] == str(database)
         assert database.is_file()
         py("bv.set_comment_at(bv.entry_point, 'persisted annotation')", a)
@@ -221,7 +276,7 @@ result = bv.file.filename
         py("""history = {}
 for i in range(4096):
     request_id = f"{bridge.generation}:rhistory{i}"
-    history[request_id] = dict(id=request_id, status="completed", target=None,
+    history[request_id] = dict(id=request_id, status="completed", target_snapshot=None, target_snapshot_stage="submission",
         submitted=0, started=0, finished=0, output_pruned=True)
 with bridge.execution.lock:
     bridge.execution.records.update(history)

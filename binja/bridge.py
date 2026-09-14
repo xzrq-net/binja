@@ -31,7 +31,7 @@ class Bridge:
                 state_dir=str(self.state), docs=config["vendor"] + "/api-docs", python=__import__("sys").version)
             if operation == "status":
                 result["targets"] = on_ui(self.targets.refresh)
-                result["requests"] = [{k: r[k] for k in ("id", "status", "target")} for r in self.execution.list() if r["status"] not in ("completed", "failed", "cancelled")]
+                result["requests"] = [{k: r[k] for k in ("id", "status", "target_snapshot")} for r in self.execution.list() if r["status"] not in ("completed", "failed", "cancelled")]
             return result
         if operation == "targets":
             return on_ui(self.targets.refresh)
@@ -42,7 +42,7 @@ class Bridge:
         if operation == "request":
             return self.execution.get(request["id"])
         if operation == "requests":
-            return self.execution.list()
+            return self.execution.list(all_history=request.get("all", False))
         if operation == "cancel":
             return self.execution.cancel(request["id"])
         raise Error(f"Unknown operation: {operation}")

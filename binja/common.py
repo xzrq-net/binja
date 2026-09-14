@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import socket
 
-PROTOCOL = 1
+PROTOCOL = 2
 MAX_MESSAGE = 4 * 1024 * 1024
 
 

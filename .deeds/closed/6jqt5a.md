@@ -17,3 +17,5 @@ analysis from a stall.
 Minor wording: `start` prints `— headless` while the guide describes a GUI on a
 private Wayland compositor; every subject flagged the mismatch as making the
 documented process model less trustworthy.
+
+Closed: Labeled target snapshots and their capture stage, added elapsed time and explicit human/JSON client wait expiry with recovery commands, and aligned start wording with the private-compositor GUI. Built and passed the external live smoke suite; see docs/log.md.

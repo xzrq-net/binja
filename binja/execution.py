@@ -15,7 +15,7 @@ from .common import Error
 from .targets import on_ui
 
 KEEP_RESULTS = 64
-MAX_PENDING = 64
+MAX_PENDING = 8
 OUTPUT_BYTES = 1024 * 1024
 RESULT_BYTES = 8 * 1024 * 1024
 INLINE_BYTES = 16 * 1024
@@ -97,7 +97,15 @@ class Execution:
             raise Error("Request belongs to an old generation; outcome is unknown/interrupted, with no rollback guarantee.")
 
     def snapshot(self, record):
-        return {k: v for k, v in record.items() if not k.startswith("_")}
+        value = {k: v for k, v in record.items() if not k.startswith("_")}
+        value["elapsed_seconds"] = max(0, value.get("finished", time.time()) - value.get("started", value["submitted"]))
+        value["phase"] = value["status"] if value["status"] in TERMINAL else value.get("phase", value["status"])
+        if record["status"] == "queued":
+            pending = [r for r in self.records.values() if r["status"] not in TERMINAL]
+            position = next(i for i, r in enumerate(pending) if r["id"] == record["id"])
+            value["queue_position"] = sum(r["status"] == "queued" for r in pending[:position + 1])
+            value["waits_behind"] = pending[position - 1]["id"] if position else None
+        return value
 
     def get(self, request_id):
         self.validate_id(request_id)
@@ -106,10 +114,17 @@ class Execution:
                 return self.snapshot(self.records[request_id])
         raise Error("Unknown request ID; this is not proof that a submitted mutation ran or did not run. Do not blindly resubmit.")
 
-    def list(self):
+    def list(self, all_history=False):
         with self.lock:
-            fields = ("id", "status", "target", "phase", "allow_incomplete", "submitted", "started", "finished")
-            return [{k: v for k, v in r.items() if k in fields} for r in self.records.values()]
+            active = [r for r in self.records.values() if r["status"] not in TERMINAL]
+            active.sort(key=lambda r: r["status"] == "queued")
+            finished = sorted((r for r in self.records.values() if r["status"] in TERMINAL),
+                key=lambda r: r["finished"], reverse=True)
+            fields = ("id", "status", "target_snapshot", "target_snapshot_stage", "phase",
+                "allow_incomplete", "submitted", "started", "finished", "elapsed_seconds",
+                "queue_position", "waits_behind")
+            return [{k: v for k, v in self.snapshot(r).items() if k in fields}
+                for r in active + (finished if all_history else finished[:5])]
 
     def submit(self, spec):
         request_id = spec.get("id")
@@ -123,8 +138,13 @@ class Execution:
                 return self.snapshot(record)
             if self.stopping:
                 raise Error("Session is shutting down; no more submissions accepted.")
-            if sum(r["status"] not in TERMINAL for r in self.records.values()) >= MAX_PENDING:
-                raise Error("Execution queue is full (64 requests). Inspect requests before submitting more work.")
+            pending = [r for r in self.records.values() if r["status"] not in TERMINAL]
+            if len(pending) >= MAX_PENDING:
+                running = next((r["id"] for r in pending if r["status"] != "queued"), "none")
+                queued = sum(r["status"] == "queued" for r in pending)
+                raise Error(f"Request {request_id} was not accepted and will not execute: "
+                    f"pending cap {MAX_PENDING}; running request: {running}; {queued} queued. "
+                    "Safe to resubmit after capacity is available.")
             return None
 
         with self.lock:
@@ -136,7 +156,7 @@ class Execution:
             duplicate = check_duplicate()
             if duplicate:
                 return duplicate
-            record = dict(id=request_id, status="queued", target=target,
+            record = dict(id=request_id, status="queued", target_snapshot=target, target_snapshot_stage="submission",
                 allow_incomplete=bool(spec.get("allow_incomplete", False)), submitted=time.time(),
                 _spec=spec, _bv=bv)
             self.records[request_id] = record
@@ -223,15 +243,14 @@ class Execution:
 
         try:
             if bv is not None:
-                on_ui(lambda: self.bridge.targets.resolve(record["target"]["handle"]))
+                on_ui(lambda: self.bridge.targets.resolve(record["target_snapshot"]["handle"]))
                 self.wait_ready(bv, record)
-                on_ui(lambda: self.bridge.targets.resolve(record["target"]["handle"]))
+                on_ui(lambda: self.bridge.targets.resolve(record["target_snapshot"]["handle"]))
             with self.lock:
                 if record["status"] == "cancelled":
                     return
                 record["status"] = "running"
                 record["phase"] = "executing"
-                record["started"] = time.time()
             scope = dict(bn=self.bn, bv=bv, args=spec.get("args", {}), result=None,
                 on_ui=captured_ui, bridge=self.bridge, request=record, __name__="__binja_script__")
             with self.stdout.capture(stdout), self.stderr.capture(stderr):
@@ -256,7 +275,11 @@ class Execution:
         while True:
             record = self.work.get()
             try:
-                if record["status"] != "cancelled":
+                with self.lock:
+                    execute = record["status"] != "cancelled"
+                    if execute:
+                        record.update(status="running", phase="preparing", started=time.time())
+                if execute:
                     self.execute(record)
             except BaseException as exc:
                 # Artifact I/O can fail before script execution or during output finalization.

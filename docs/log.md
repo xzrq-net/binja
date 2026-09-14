@@ -633,3 +633,33 @@ queued receipt over a no-backlog busy response; the decision stays with the
 user in `t87ez9`. Not covered by these trials: contention between two clients
 on one session, cancellation, multi-file sessions beyond C's two targets, and
 the bounded implementation review that `2nbgtk` also lists.
+
+## 2026-09-13 — Small, observable serial queue
+
+Implemented the user's decision to retain queueing and the serial worker. Chose
+8 unfinished requests including the active request, preserving the existing cap's
+counting rule (normally one running plus seven queued), and five newest finished
+records after active/queued work in the default listing. `requests --all` retains
+full history access. Cap rejection guarantees non-acceptance/no execution and
+names the running request and queued count; the rejected ID remains reusable.
+Accepted receipts in both formats expose queue position, immediate predecessor,
+retained target snapshot, phase, and elapsed seconds. Queued cancellation still
+frees capacity. Elapsed time begins at worker pickup, including readiness waits,
+or submission for unstarted work. Client wait expiry now has an explicit marker
+and recovery command in both formats.
+
+Renamed request `target` to `target_snapshot`, with a capture stage (`submission`,
+or `open` after loading/attachment) rather than refreshing historical descriptions.
+Protocol version 2 rejects mismatched packages; sessions need restarting after
+upgrade. The start line now describes the GUI on its private Wayland compositor.
+Updated the packaged guide and design reference; no worker concurrency or new
+analysis commands were introduced.
+
+`nix build`, Python compilation, diff whitespace checks, and the live smoke suite
+passed. External-workspace evidence: `/tmp/binja-smoke-v0rketc6`, using the default
+license. Added deterministic blocked-worker checks for human/JSON queued receipts,
+expiry, cap rejection, duplicate recovery at capacity, cancellation, safe reuse of
+a rejected ID, and default/full listing order. Existing persistence and recovery
+checks also passed. No evidence argues against the decision, but the original
+trials had no overlapping submissions and this suite does not measure sustained
+multi-client contention or establish an optimal cap. No subagents or commits.
