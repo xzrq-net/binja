@@ -36,3 +36,10 @@ borrowed.
 
 Verify against the GUI rendering for a representative function in `sample` and
 `bash`. Update binja/guide.md (recipes the commands replace) and tests/smoke.py.
+
+This is the first command that is not Python submission, so it also changes
+the interface description: README.md:4 and the Scope paragraph of
+docs/design.md describe the CLI as running Python and exposing API docs.
+Reword them to "typed analysis commands with Python as the backstop" in the
+same change, and give design.md a short section on the shared resolver and
+output contract so later parts cite it instead of restating it.

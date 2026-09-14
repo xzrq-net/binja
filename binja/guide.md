@@ -119,10 +119,12 @@ default reading order, not a rule.
 2. When the decompilation looks wrong, HLIL is a weak fallback and MLIL is the
    strong one. MLIL keeps the analysis results but shows what the decompiler
    folded away.
-3. LLIL has no strong use in ordinary analysis.
-4. Disassembly is for assembly-level questions (encodings, strides, calling
-   conventions) and is the epistemic backstop when the ILs disagree with each
-   other or with the bytes.
+3. When the question reaches the instruction level, read LLIL rather than
+   disassembly: it says the same thing in fewer tokens and normalizes the
+   architecture away.
+4. Disassembly is for encodings, raw bytes, and calling-convention details,
+   and is the epistemic backstop when the ILs disagree with each other or with
+   the bytes.
 
 In Python, `f.hlil`, `f.mlil`, and `f.llil` are the IL functions, and
 `f.instructions` yields disassembly; every IL instruction carries `.address`.
