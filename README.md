@@ -54,7 +54,8 @@ python3 tests/smoke.py --binja ./result/bin/binja --sample /path/to/small/ELF
 python3 tests/bridge.py --package "$(readlink -f result)" --sample /path/to/small/ELF
 ```
 
-The checks require a Personal license. They copy the sample into a temporary
+The checks require a Personal license (`smoke.py --offline` runs only the help
+and API lookup phases and needs neither license nor sample). They copy the sample into a temporary
 workspace, analyze it without executing it, and verify targeting, request recovery,
 save/reopen, and shutdown behavior.
 

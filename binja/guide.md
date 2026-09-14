@@ -63,19 +63,22 @@ Look up unfamiliar API calls before guessing:
 
 ```sh
 binja api search 'call site'
+binja api members Function --match name
 binja api show BinaryView.get_functions_containing
 binja api paths
 ```
 
-Search/show read the installed distribution's Python declarations and docstrings.
-`api paths` locates the matching source and Sphinx documentation. These commands,
-`--help`, and `skill` need no running session or license. Use qualified symbols to
-resolve ambiguity. `api show` includes the declaration, property writability or
-enum members, full docstring, and one source:line pointer for reading the
-implementation. `api search` states how many matches it shows; use `--limit N`
-to see more. `--verbose` includes version and documentation paths. Static lookup
-does not enumerate inherited members or native UI classes; inspect the packaged
-documentation for those.
+These commands read the installed distribution's static index and, like `--help`
+and `skill`, need no session or license. `api search` matches declarations and
+docstrings, so a hit does not establish membership; `api members CLASS` does,
+listing public members with property writability and inherited members with
+their owning class (`--match TEXT` filters names by substring). Check it before
+guessing names like `Function.set_user_name` or `Function.size`, which do not
+exist. `api show` gives the declaration, property or enum metadata, docstring,
+and a source:line pointer. Qualified symbols resolve ambiguity. Bases outside
+the index (native UI classes, C extension types) are reported as unknown;
+inspect the documentation located by `api paths` for those. Search reports
+shown/total matches (`--limit N`); `--verbose` adds version and documentation paths.
 
 `py` accepts stdin, `-c CODE`, or `--file PATH`. Each request gets fresh
 globals: `bn`, `bv`, `args`, `result`, and `on_ui(callable)`. Assign JSON-

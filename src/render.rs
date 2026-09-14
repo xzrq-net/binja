@@ -390,6 +390,37 @@ pub fn render(
                     println!("\n{}", text(v, "doc"));
                 }
             }
+            "api members" => {
+                println!(
+                    "{} of {} indexed members of {}",
+                    v["total"],
+                    v["total_members"],
+                    text(v, "class")
+                );
+                if v["total"] == 0 && v["match"].is_string() {
+                    println!("No indexed member names match {:?}.", text(v, "match"));
+                }
+                for member in v["members"].as_array().unwrap() {
+                    let owner = text(member, "owner");
+                    let inherited = if owner == text(v, "class") {
+                        String::new()
+                    } else {
+                        format!(" [from {owner}]")
+                    };
+                    println!("{}{}", api::declaration(member), inherited);
+                }
+                let unresolved = v["unresolved_bases"].as_array().unwrap();
+                if !unresolved.is_empty() {
+                    println!(
+                        "Bases not in the static index: {}. Their members are unknown; inspect documentation with api paths.",
+                        unresolved
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                }
+            }
             "api search" => {
                 let matches = v["matches"].as_array().unwrap();
                 if matches.len() as u64 != v["total"].as_u64().unwrap_or(0) {

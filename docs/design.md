@@ -269,16 +269,34 @@ after a GUI crash requires a successful database save.
 
 ## API discovery and documentation
 
-`api search` and `api show` use an index built from the installed distribution's
-Python declarations and docstrings. Results include version and source locations;
-`api paths` locates bundled source and Sphinx documentation. The index labels
-declaration `kind`, properties' `writable` status and
+`api search`, `api show`, and `api members` use an index built from the installed
+distribution's Python declarations and docstrings. Results include version and
+source locations; `api paths` locates bundled source and Sphinx documentation.
+The index labels declaration `kind`, properties' `writable` status and
 `return_type`, and enum `members`. Members contain a name and source expression,
 plus `value` when statically literal; unresolved expressions are not evaluated.
 Setter declarations are folded into their property rather than indexed as a
-second symbol. Static lookup requires no GUI, license, or Binary Ninja imports
-in the CLI. Inherited members and native UI classes may require direct
-documentation inspection.
+second symbol. Class and enum records also carry `bases`, a C3 `mro`, and
+`unresolved_bases`. The builder resolves local classes and explicit imports,
+including relative imports, module aliases, and re-exports. Unindexed bases
+retain their import path or source name and are treated as opaque roots in the
+static MRO; `object` contributes no public members. Their unknown ancestry can
+limit the order's accuracy. No source expressions are executed.
+
+`api members CLASS [--match TEXT]` lists every matching public indexed member:
+methods, properties, nested classes, and enum values. Direct members come first,
+then inherited members grouped by owning class in MRO order, alphabetically
+within each class. Overrides appear once, selected by MRO before filtering.
+`--match` is a case-insensitive literal substring of the member name, with outer
+whitespace stripped; it does not search signatures, owners, or docstrings.
+Rows retain declaration metadata and add `name` and `owner`; JSON also reports
+`class`, `mro`, `unresolved_bases`, the requested `match`, matching `total`, and
+unfiltered `total_members`. Empty matches succeed with an empty list; absent,
+ambiguous, or non-class symbols fail. An unindexed base is an explicit coverage
+gap, including when a filter returns no rows. Assignments, instance fields,
+generated members, and private declarations are outside the index. Static
+lookup requires no GUI, license, or Binary Ninja imports; native UI classes and
+other gaps may require direct source or documentation inspection via `api paths`.
 
 Default human output keeps outcomes, retained handles, payloads, failures, and
 recovery commands. Full paths appear for open/save outcomes and target listings;

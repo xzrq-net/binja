@@ -881,3 +881,28 @@ fallback, and LLIL rarely; that preference now sits in the guide.
 Re-scoped `zbqnx2` into a milestone with parts 5bkxzv, 2wrz2e, fm4yyw, vmnn2h,
 c6z866; filed scpm34 (screenshot and input for stuck GUI states, user
 request) and 8ty558 (database search, frozen); staged 32k3q7.
+
+## 2026-09-13 — Offline class member lookup (32k3q7, stage 1)
+
+Implemented `api members CLASS [--match TEXT]` against the packaged static index.
+The index now resolves explicit imports and records bases, C3 method resolution
+order, and unresolved bases. Listings select overrides once, show direct members
+first and inherited owners in MRO order, and sort names within each owner.
+Filtering uses a case-insensitive literal substring of the member name, trimming
+outer whitespace. Lists are untruncated; empty matches succeed, while absent,
+ambiguous, and non-class symbols fail. Unindexed bases remain explicit coverage
+gaps. No runtime introspection was added.
+
+Verification: all four Python index tests and six Rust tests passed. The
+regenerated development index was exercised through `cargo run`; BinaryView
+lists 413 members. The installed offline smoke suite passed after `nix build`
+(`/tmp/binja-smoke-hfl0brpk`), covering inherited ownership and property metadata,
+multiple inheritance, both nonexistent Function members, ambiguous CacheImage,
+native/unindexed symbols, and enum values. The builder fixtures also cover
+relative imports, re-exports, nested classes, diamonds, and invalid inheritance.
+Static review found no assignments masking indexed inherited members or borrowed
+property accessors in the pinned distribution. No GUI or license was used.
+
+The guide's API lookup paragraph now addresses the Function guesses without
+duplicating API documentation. Runtime lookup stays deferred until a concrete
+failure needs it.

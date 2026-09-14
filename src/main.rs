@@ -78,7 +78,7 @@ fn wait_seconds(value: &str) -> std::result::Result<f64, String> {
 enum Commands {
     #[command(about = "Print the packaged workflow guide (no session required)")]
     Skill,
-    #[command(about = "Search/show matching API documentation without a GUI")]
+    #[command(about = "Look up API documentation and class members without a GUI")]
     Api {
         #[command(subcommand)]
         command: Api,
@@ -155,6 +155,15 @@ enum Api {
     Show {
         symbol: String,
     },
+    #[command(about = "List public static members, including indexed bases, without truncation")]
+    Members {
+        class: String,
+        #[arg(
+            long = "match",
+            help = "Case-insensitive literal substring of the member name"
+        )]
+        name_match: Option<String>,
+    },
 }
 
 fn submit(cli: &Cli, state: &Path, execution: &Execution, mut spec: Value) -> Result<Value> {
@@ -209,12 +218,15 @@ fn run(cli: &Cli) -> Result<i32> {
         return Ok(0);
     }
     if let Commands::Api { command } = &cli.command {
-        let (op, value, limit) = match command {
-            Api::Paths => ("paths", "", 15),
-            Api::Show { symbol } => ("show", symbol.as_str(), 15),
-            Api::Search { query, limit } => ("search", query.as_str(), *limit),
+        let (op, value, limit, name_match) = match command {
+            Api::Paths => ("paths", "", 15, None),
+            Api::Show { symbol } => ("show", symbol.as_str(), 15, None),
+            Api::Search { query, limit } => ("search", query.as_str(), *limit, None),
+            Api::Members { class, name_match } => {
+                ("members", class.as_str(), 0, name_match.as_deref())
+            }
         };
-        let result = api::query(&resources, op, value, limit)?;
+        let result = api::query(&resources, op, value, limit, name_match)?;
         render::render(
             &result,
             &format!("api {op}"),

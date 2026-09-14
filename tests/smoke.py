@@ -36,19 +36,23 @@ def receive_wire(connection):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binja", required=True, type=Path)
-    parser.add_argument("--sample", required=True, type=Path)
+    parser.add_argument("--sample", type=Path)
+    parser.add_argument("--offline", action="store_true", help="Only help and API lookup; no sample, GUI, or license needed")
     parser.add_argument("--license", type=Path, default=Path.home() / ".binaryninja/license.dat")
     options = parser.parse_args()
+    if not options.offline and options.sample is None:
+        parser.error("--sample is required unless --offline is used")
     binary = str(options.binja.resolve())
     workspace = Path(tempfile.mkdtemp(prefix="binja-smoke-"))
     state = workspace / ".binja"
     env = os.environ.copy()
     env.pop("PYTHONPATH", None)
     sample_a, sample_b = workspace / "a/sample", workspace / "b/sample"
-    for sample in (sample_a, sample_b):
-        sample.parent.mkdir()
-        shutil.copy2(options.sample, sample)
-    original_hash = hashlib.sha256(sample_a.read_bytes()).hexdigest()
+    if not options.offline:
+        for sample in (sample_a, sample_b):
+            sample.parent.mkdir()
+            shutil.copy2(options.sample, sample)
+        original_hash = hashlib.sha256(sample_a.read_bytes()).hexdigest()
 
     def cli(*args, code=0, stdin=None, receipts=None):
         completed = subprocess.run([binary, "--json", *map(str, args)], cwd=workspace,
@@ -95,9 +99,58 @@ def main():
         assert "Docs:" not in human_api and "Binary Ninja" not in human_api
         search = subprocess.check_output([binary, "api", "search", "function", "--limit", "1"], cwd=workspace, env=env, text=True)
         assert "1 of " in search and "--limit" in search
+
+        large = cli("api", "members", "BinaryView")
+        assert large["total"] == large["total_members"] == len(large["members"]) > 200
+        names = [m["name"] for m in large["members"]]
+        assert names == sorted(set(names))
+        assert "get_functions_containing" in names and "write" in names
+        assert all(m["owner"] == large["class"] and "doc" not in m for m in large["members"])
+        assert large["unresolved_bases"] == []
+        filtered = cli("api", "members", "binaryninja.Function", "--match", "NaMe")
+        assert filtered["members"] and all("name" in m["name"].lower() for m in filtered["members"])
+        name = next(m for m in filtered["members"] if m["name"] == "name")
+        assert name["writable"] is True and name["return_type"] == "str"
+        hlil = cli("api", "members", "Function", "--match", "hlil")["members"]
+        assert next(m for m in hlil if m["name"] == "hlil")["writable"] is False
+        for missing in ("set_user_name", "size", "Function.", "self", "name*"):
+            absent = cli("api", "members", "Function", "--match", missing)
+            assert absent["total"] == 0 and absent["members"] == [] and absent["unresolved_bases"] == []
+        assert "nonempty" in cli("api", "members", "Function", "--match", "  ", code=1)["error"]
+        for missing in ("does_not_exist", "binaryninjaui.UIContext", "ctypes.Structure"):
+            assert "not in the static index" in cli("api", "members", missing, code=1)["error"]
+        ambiguous = cli("api", "members", "CacheImage", code=1)["error"]
+        assert "Ambiguous" in ambiguous and "binaryninja.kernelcache.kernelcache.CacheImage" in ambiguous
+        assert "binaryninja.sharedcache.sharedcache.CacheImage" in ambiguous
+        assert cli("api", "members", "binaryninja.kernelcache.kernelcache.CacheImage")["class"].endswith(".CacheImage")
+        assert "not a class" in cli("api", "members", "Function.name", code=1)["error"]
+
+        inherited = cli("api", "members", "HighLevelILBasicBlock")
+        member = next(m for m in inherited["members"] if m["name"] == "start")
+        assert member["owner"] == "binaryninja.basicblock.BasicBlock" and member["writable"] is False
+        assert cli("api", "show", member["symbol"])["signature"] == member["signature"]
+        multiple = cli("api", "members", "HighLevelILAdd")
+        names = [m["name"] for m in multiple["members"]]
+        assert len(names) == len(set(names))
+        order = [(multiple["mro"].index(m["owner"]), m["name"]) for m in multiple["members"]]
+        assert order == sorted(order)
+        assert any(m["owner"] == "binaryninja.commonil.BaseILInstruction" for m in multiple["members"])
+        human = subprocess.check_output([binary, "api", "members", "HighLevelILBasicBlock", "--match", "start"],
+            cwd=workspace, env=env, text=True)
+        assert "[from binaryninja.basicblock.BasicBlock]" in human and "[property, read-only]" in human
+        partial = cli("api", "members", "SegmentDescriptorList", "--match", "does_not_exist")
+        assert partial["members"] == [] and partial["unresolved_bases"] == ["list"]
+        human = subprocess.check_output([binary, "api", "members", "SegmentDescriptorList", "--match", "does_not_exist"],
+            cwd=workspace, env=env, text=True)
+        assert "No indexed member names match" in human and "Their members are unknown" in human
+        enum = cli("api", "members", "binaryninja.enums.SymbolType", "--match", "ImportedFunctionSymbol")["members"]
+        assert len(enum) == 1 and enum[0]["value"] == 2
         assert "GENERATION:rUNIQUE_ID" in subprocess.check_output([binary, "py", "--help"], text=True)
         assert cli("status") == {"running": False, "state_dir": str(state)}
         assert not state.exists()
+        if options.offline:
+            phase(f"PASS — offline API lookup; evidence: {workspace}")
+            return
 
         phase("Failed supervisor returns after the competing-winner grace")
         blocker = state / "bn/plugins/block-start"

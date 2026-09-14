@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Static declaration metadata, including unresolved enum expressions."""
+"""Static declaration metadata and inheritance, without importing vendor code."""
 from pathlib import Path
 import sys
 import tempfile
@@ -10,6 +10,16 @@ from binja.api import declarations
 
 
 class IndexTests(unittest.TestCase):
+    def index(self, sources):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name) / 'binaryninja'
+        for filename, source in sources.items():
+            path = root / filename
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('raise RuntimeError("must not import")\n' + source)
+        return {r['symbol']: r for r in declarations(root)}
+
     def test_properties_and_enum_members_without_importing(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / 'binaryninja'
@@ -43,6 +53,63 @@ class SymbolType(enum.IntEnum):
             self.assertEqual(members[2]['value'], -1)
             self.assertNotIn('value', members[3])
             self.assertEqual(members[3]['expression'], 'enum.auto()')
+
+    def test_diamond_imports_and_nested_classes(self):
+        records = self.index({
+            'base.py': '''
+class Root:
+    @property
+    def name(self) -> str: pass
+    @name.setter
+    def name(self, value): pass
+class Left(Root): pass
+class Right(Root):
+    @property
+    def name(self) -> int: pass
+''',
+            'exports/__init__.py': 'from ..base import Right as Renamed\n',
+            'child.py': '''
+from . import base as source
+from .exports import Renamed
+class Diamond(source.Left, Renamed):
+    class Nested(source.Root):
+        def nested_only(self): pass
+''',
+        })
+        child = records['binaryninja.child.Diamond']
+        self.assertEqual(child['bases'], ['binaryninja.base.Left', 'binaryninja.base.Right'])
+        self.assertEqual(child['mro'], ['binaryninja.child.Diamond', 'binaryninja.base.Left',
+            'binaryninja.base.Right', 'binaryninja.base.Root', 'builtins.object'])
+        self.assertEqual(child['unresolved_bases'], [])
+        nested = records['binaryninja.child.Diamond.Nested']
+        self.assertEqual(nested['bases'], ['binaryninja.base.Root'])
+        self.assertTrue(records['binaryninja.base.Root.name']['writable'])
+        self.assertFalse(records['binaryninja.base.Right.name']['writable'])
+        self.assertIn('binaryninja.child.Diamond.Nested.nested_only', records)
+
+    def test_unindexed_bases_are_explicit_and_transitive(self):
+        records = self.index({'example.py': '''
+from native import Extension as Native
+from typing import Generic
+class _Private: pass
+class Partial(Native, Generic[T], _Private):
+    def known(self): pass
+class Child(Partial): pass
+class Empty(object): pass
+'''})
+        child = records['binaryninja.example.Child']
+        self.assertEqual(child['unresolved_bases'], ['native.Extension', 'typing.Generic', '_Private'])
+        self.assertEqual(records['binaryninja.example.Empty']['unresolved_bases'], [])
+        self.assertIn('binaryninja.example.Partial.known', records)
+        self.assertNotIn('binaryninja.example._Private', records)
+
+    def test_invalid_inheritance_fails_without_recursing_forever(self):
+        for source, error in [
+            ('class A(B): pass\nclass B(A): pass\n', 'Cyclic'),
+            ('class A: pass\nclass B(A): pass\nclass C(A, B): pass\n', 'Inconsistent'),
+        ]:
+            with self.subTest(error=error), self.assertRaisesRegex(ValueError, error):
+                self.index({'example.py': source})
 
 
 if __name__ == '__main__':
