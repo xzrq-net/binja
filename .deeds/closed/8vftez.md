@@ -10,3 +10,5 @@ wait-for-capacity submission mode, a larger cap, or leaving retry to the
 client. Also observed: a `--no-target` read waits behind unrelated CPU-bound
 work, so short reads cannot overtake long scripts. Revisit when a real
 workload, not a synthetic burst, hits the cap.
+
+Closed: Won't do. The serial worker is the design; dense per-function work belongs in one script, not a scheduler. One guide sentence to that effect goes with rcxvky.

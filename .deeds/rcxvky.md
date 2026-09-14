@@ -16,3 +16,7 @@ CLI. Recipes they asked for, in the packaged guide (`binja/guide.md`):
   semantics stated, imports with library attribution if the API exposes it.
 
 Keep these as guide text unless `zbqnx2` turns one into a command.
+
+Also state plainly: one worker per session, so batch per-function work into a
+single script; parallel shells hide client overhead but add no throughput
+(closed `8vftez`).

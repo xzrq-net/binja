@@ -1,3 +1,6 @@
+---
+blocked-by: [z8rdpn]
+---
 # Remove the 200 ms completion-latency floor on small requests
 
 In the stress trial, 100 sequential trivial `py` calls took 25.2 s: median
