@@ -22,6 +22,21 @@ INLINE_BYTES = 16 * 1024
 TERMINAL = {"completed", "failed", "cancelled"}
 
 
+def script_traceback(exc):
+    """Hide execution wrappers, retaining script and downstream API frames."""
+    trace = traceback.TracebackException.from_exception(exc)
+    def trim(item):
+        while item.stack and item.stack[0].filename == __file__:
+            del item.stack[0]
+        for nested in (item.__cause__, item.__context__):
+            if nested is not None:
+                trim(nested)
+        for nested in getattr(item, "exceptions", None) or ():
+            trim(nested)
+    trim(trace)
+    return "".join(trace.format())
+
+
 class ThreadOutput:
     """Delegate unrelated threads to the GUI's original stream."""
     def __init__(self, original):
@@ -295,7 +310,7 @@ class Execution:
                 if record["status"] != "cancelled":
                     outcome = dict(status="failed", error=f"{type(exc).__name__}: {exc}"[-INLINE_BYTES:])
                     if not isinstance(exc, Error):
-                        outcome["traceback"] = traceback.format_exc()[-INLINE_BYTES:]
+                        outcome["traceback"] = script_traceback(exc)[-INLINE_BYTES:]
         finally:
             output, errors = stdout.finish(), stderr.finish()
             with self.lock:

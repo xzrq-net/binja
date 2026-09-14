@@ -10,8 +10,39 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.modules['binja.targets'] = types.SimpleNamespace(on_ui=lambda f: f())
-from binja.execution import Execution
+from binja.execution import Execution, script_traceback
+import binja.execution as execution_module
 from binja.common import Error
+
+
+class TracebackTests(unittest.TestCase):
+    def render(self, source):
+        # A wrapper frame with the same filename as the real plugin executor.
+        wrapper = compile("exec(compile(source, 'probe.py', 'exec'))",
+                          execution_module.__file__, "exec")
+        try:
+            exec(wrapper, {"source": source})
+        except BaseException as exc:
+            # Start at the wrapper, as Execution.execute does.
+            exc.__traceback__ = exc.__traceback__.tb_next
+            return script_traceback(exc)
+
+    def test_script_and_inner_frames(self):
+        text = self.render("def inner():\n    raise ValueError('marker')\ninner()")
+        self.assertIn('File "probe.py", line 3', text.splitlines()[1])
+        self.assertIn('File "probe.py", line 2, in inner', text)
+        self.assertNotIn(execution_module.__file__, text)
+
+    def test_chain_and_syntax_location(self):
+        text = self.render("try: 1/0\nexcept Exception as e: raise ValueError('outer') from e")
+        self.assertIn("ZeroDivisionError", text)
+        self.assertIn("direct cause", text)
+        self.assertIn("ValueError: outer", text)
+        self.assertNotIn(execution_module.__file__, text)
+        text = self.render("if :")
+        self.assertIn('File "probe.py", line 1', text)
+        self.assertIn("SyntaxError", text)
+        self.assertNotIn(execution_module.__file__, text)
 
 
 class WaitTests(unittest.TestCase):

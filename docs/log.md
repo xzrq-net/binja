@@ -778,3 +778,28 @@ Not verified: a complete replay of runD's stress workload, hours-long contention
 or memory growth, supervisor/GUI crash recovery, or forced-kill escalation against
 a deliberately unresponsive native child. Guide recipe validation (rcxvky) and
 the bounded adversarial implementation review remain phase C work. No review or usability subagents ran in this phase.
+
+## 2026-09-13 — Guide recipes and CLI diagnostics
+
+Validated the four packaged guide recipes with the installed Rust binary from
+`/tmp/binja-recipes-pnmzqge5`, outside the checkout. The C++ ELF entry function
+printed five addressed HLIL lines and twelve disassembly instructions. Renaming
+it to `reviewed_entry` and assigning its function comment survived a database save,
+stop/start, and reopen. Its inventory printed entry 0x401080, 29 functions, main
+largest at 1613 basic-block bytes, four dependencies, and import type-library
+attribution where available. On system Bash, malloc exposed all three import
+symbol kinds; the caller recipe printed 47 call sites and 47 code references with
+the stub excluded. Recipe transcripts are under `temp/phase-c/`. The guide now
+groups recovery behavior without repeating receipt, cancellation, and retry
+explanations, and states the one-worker batching constraint.
+
+Read timeouts now name the request and recovery command; JSON acceptance events
+include the existing flag. Status pluralizes file/view counts. Script tracebacks
+omit leading executor frames, preserving downstream frames, exception chains,
+and syntax-error locations. Four Rust tests and five Python execution tests pass.
+The installed live smoke suite passed from `/tmp/binja-smoke-iepcy6lq`; added
+assertions cover singular file output, both acceptance flag values, and the first
+script frame. No existing assertion was weakened. Nix builds pass.
+
+The timeout tests use a connected, nonresponding socket peer; a deliberately hung
+GUI was not tested. The broader adversarial review (2nbgtk) remains separate.

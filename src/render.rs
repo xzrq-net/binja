@@ -34,7 +34,7 @@ pub fn recovery(state: &Path, id: &str) -> String {
 }
 pub fn receipt(v: &Value, existing: bool, json_mode: bool, verbose: bool) -> Result<()> {
     if json_mode {
-        let mut event = json!({"event":"accepted"});
+        let mut event = json!({"event":"accepted", "existing":existing});
         for key in [
             "id",
             "status",
@@ -344,10 +344,12 @@ pub fn render(
                     let rows = v["requests"].as_array().unwrap();
                     let queued = rows.iter().filter(|r| r["status"] == "queued").count();
                     println!(
-                        "Running  {}  {} files ({} views)  {} running, {queued} queued",
+                        "Running  {}  {} file{} ({} view{})  {} running, {queued} queued",
                         text(v, "state_dir"),
                         v["file_count"],
+                        if v["file_count"] == 1 { "" } else { "s" },
                         v["view_count"],
+                        if v["view_count"] == 1 { "" } else { "s" },
                         rows.len() - queued
                     );
                     for r in rows {

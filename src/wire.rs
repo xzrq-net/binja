@@ -3,6 +3,7 @@ use serde_json::{Value, json};
 use socket2::{Domain, SockAddr, Socket, Type};
 use std::{
     fs,
+    io::{Error as IoError, ErrorKind},
     os::fd::AsRawFd,
     path::Path,
     time::{Duration, Instant},
@@ -40,7 +41,7 @@ pub fn receive(socket: &Socket, limit: usize, timeout: Duration) -> Result<Value
     loop {
         let remaining = deadline
             .checked_duration_since(Instant::now())
-            .context("RPC read timed out; inspect the existing request ID.")?;
+            .ok_or_else(|| IoError::new(ErrorKind::TimedOut, "RPC read timed out"))?;
         socket.set_read_timeout(Some(remaining))?;
         // MSG_TRUNC reports the original packet length, even if the buffer is smaller.
         let n = unsafe {
@@ -56,8 +57,10 @@ pub fn receive(socket: &Socket, limit: usize, timeout: Duration) -> Result<Value
             if error.kind() == std::io::ErrorKind::Interrupted {
                 continue;
             }
-            return Err(error)
-                .context("Read RPC packet; inspect the existing request ID after a disconnect");
+            if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) {
+                return Err(IoError::new(ErrorKind::TimedOut, "RPC read timed out").into());
+            }
+            return Err(error).context("Read RPC packet");
         }
         let n = n as usize;
         ensure!(
@@ -127,7 +130,26 @@ pub fn call(
         })?;
     send(&socket, &params, MAX_REQUEST)?;
     loop {
-        let response = receive(&socket, MAX_RESPONSE, timeout)?;
+        let response = receive(&socket, MAX_RESPONSE, timeout).map_err(|error| {
+            if error
+                .downcast_ref::<IoError>()
+                .is_some_and(|e| e.kind() == ErrorKind::TimedOut)
+            {
+                let id = params["spec"]["id"]
+                    .as_str()
+                    .or_else(|| params["id"].as_str());
+                let context = match id {
+                    Some(id) => format!(
+                        "Read timeout for request {id}. Retrieve with: {}",
+                        crate::render::recovery(state, id)
+                    ),
+                    None => format!("Read timeout during {op}; inspect {}/logs", state.display()),
+                };
+                error.context(context)
+            } else {
+                error
+            }
+        })?;
         ensure!(
             response["protocol"] == PROTOCOL && response["generation"] == generation,
             "Session identity or protocol mismatch; restart with the matching package."
@@ -186,6 +208,61 @@ mod tests {
         );
         writer.join().unwrap();
     }
+    #[test]
+    fn socket_timeout_is_not_a_disconnect() {
+        let (_a, b) = Socket::pair(Domain::UNIX, Type::SEQPACKET, None).unwrap();
+        let error = receive(&b, MAX_RESPONSE, Duration::from_millis(20)).unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<IoError>().unwrap().kind(),
+            ErrorKind::TimedOut
+        );
+        assert!(!format!("{error:#}").contains("disconnect"));
+    }
+
+    #[test]
+    fn timeout_recovery_names_submitted_and_retrieved_requests() {
+        let state = std::env::temp_dir().join(format!("binja-timeout-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(state.join("runtime")).unwrap();
+        fs::write(
+            state.join("runtime/instance.json"),
+            r#"{"generation":"abcdef123456"}"#,
+        )
+        .unwrap();
+        let listener = socket().unwrap();
+        listener
+            .bind(&SockAddr::unix(state.join("runtime/rpc.sock")).unwrap())
+            .unwrap();
+        listener.listen(2).unwrap();
+        // Keep the peer alive without replying: exercise SO_RCVTIMEO, not EOF.
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (peer, _) = listener.accept().unwrap();
+                receive(&peer, MAX_REQUEST, Duration::from_secs(1)).unwrap();
+                std::thread::sleep(Duration::from_millis(60));
+            }
+        });
+        for (op, params) in [
+            ("submit", json!({"spec":{"id":"abcdef123456:rtimeout"}})),
+            ("request", json!({"id":"abcdef123456:rtimeout"})),
+        ] {
+            let error = call(
+                &state,
+                op,
+                params,
+                false,
+                Duration::from_millis(20),
+                |_, _| Ok(()),
+            )
+            .unwrap_err();
+            let message = format!("{error:#}");
+            assert!(message.contains("Read timeout for request abcdef123456:rtimeout"));
+            assert!(message.contains(&crate::render::recovery(&state, "abcdef123456:rtimeout")));
+            assert!(!message.contains("disconnect"));
+        }
+        server.join().unwrap();
+        fs::remove_dir_all(state).unwrap();
+    }
+
     #[test]
     fn reject_truncation_missing_end_and_oversized_messages() {
         for packet in [vec![1; CHUNK + 2], vec![2, 3], vec![1]] {

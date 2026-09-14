@@ -77,11 +77,12 @@ to see more. `--verbose` includes version and documentation paths. Static lookup
 does not enumerate inherited members or native UI classes; inspect the packaged
 documentation for those.
 
-`py` accepts stdin, `-c CODE`, or `--file PATH`. Each request gets fresh globals:
-`bn`, `bv`, `args`, `result`, and `on_ui(callable)`. Assign JSON-compatible values to
-`result`; convert API objects into the fields you need. Use `hex()` for readable
-virtual addresses. Integer addresses remain exact in JSON; file offsets are
-different quantities. `py --no-target` runs with `bv=None` for session-level work.
+`py` accepts stdin, `-c CODE`, or `--file PATH`. Each request gets fresh
+globals: `bn`, `bv`, `args`, `result`, and `on_ui(callable)`. Assign JSON-
+compatible values to `result`; convert API objects into the fields you need. Use
+`hex()` for readable virtual addresses. Integer addresses remain exact in JSON;
+file offsets are different quantities. `py --no-target` runs with `bv=None` for
+session-level work.
 
 The CLI reads `--file` locally, but executes its contents in the GUI process.
 The complete serialized submission (source, arguments, and metadata) has a 4 MiB
@@ -92,9 +93,9 @@ interpreter. Variables from earlier requests are unavailable; imports and databa
 edits persist. Stdout/stderr capture includes synchronous `on_ui` callbacks, but
 excludes spawned threads and native Binary Ninja logs.
 
-Target-bound commands wait for completed analysis when they execute.
-`--allow-incomplete` skips this check and is recorded in the result. Analysis on
-hold produces an error; resume it explicitly:
+Target-bound commands wait for completed analysis when they execute. `--allow-
+incomplete` skips this check and is recorded in the result. Analysis on hold
+produces an error; resume it explicitly:
 
 ```sh
 binja py --allow-incomplete -c 'bv.set_analysis_hold(False); bv.update_analysis_and_wait()'
@@ -104,13 +105,119 @@ If a script edits and then reads dependent results, call
 `bv.update_analysis_and_wait()` between them. Keep analysis work on the worker;
 use `on_ui` only for GUI calls. Raw views have no analysis pipeline.
 
-## Request recovery
+## Analysis recipes
+
+These examples assume one analyzed target; add `--target HANDLE` when needed.
+
+### Addressed HLIL and disassembly
+
+Select a function by its start address (the entry point here). An HLIL line's
+address is an anchor, not a one-to-one mapping to machine instructions; several
+lines may share it. Print both listings to inspect the surrounding instructions.
+
+```sh
+binja py <<'PY'
+f = bv.get_function_at(bv.entry_point)
+print(f"{f.name} {f.start:#x}")
+print("HLIL")
+for line in f.hlil.root.lines:
+    print(f"{line.address:#x}  {line}")
+print("Disassembly")
+for tokens, address in f.instructions:
+    print(f"{address:#x}  {''.join(str(t) for t in tokens)}")
+PY
+```
+
+### Rename, comment, and verify persistence
+
+This edits the entry function. Use a fresh database path; save before
+restarting, then verify the saved values after reopening.
+
+```sh
+binja py <<'PY'
+f = bv.get_function_at(bv.entry_point)
+f.name = "reviewed_entry"
+f.comment = "Reviewed entry function"
+print(f"{f.start:#x}  {f.name}  {f.comment}")
+PY
+binja save ./reviewed.bndb
+binja stop
+binja start
+binja open ./reviewed.bndb
+binja py <<'PY'
+f = bv.get_function_at(bv.entry_point)
+assert f.name == "reviewed_entry" and f.comment == "Reviewed entry function"
+print(f"{f.start:#x}  {f.name}  {f.comment}")
+PY
+```
+
+### Import callers
+
+Replace `malloc` with an import name from the inventory below. An import can
+have a stub (`ImportedFunctionSymbol`), an address slot (`ImportAddressSymbol`),
+and an external destination (`ExternalSymbol`). Collect all three; formats need
+not expose every kind. Exclude the import's own stub from callers.
+
+`call_sites` with `get_callees` asks which calls analysis resolves to these
+addresses. `get_code_refs` also finds non-call references, so its count need not
+match. Unresolved indirect calls may be absent from either result.
+
+```sh
+binja py <<'PY'
+name = "malloc"
+kinds = {bn.SymbolType.ImportedFunctionSymbol, bn.SymbolType.ImportAddressSymbol,
+         bn.SymbolType.ExternalSymbol}
+symbols = [s for s in bv.get_symbols_by_name(name) if s.type in kinds]
+assert symbols, f"No import named {name}"
+for s in symbols:
+    print(f"{s.address:#x}  {s.type.name}  {s.full_name}")
+addresses = {s.address for s in symbols}
+stubs = {s.address for s in symbols if s.type == bn.SymbolType.ImportedFunctionSymbol}
+calls = set()
+for f in bv.functions:
+    if f.start in stubs:
+        continue
+    for site in f.call_sites:
+        if addresses.intersection(bv.get_callees(site.address, f, site.arch)):
+            calls.add((f.start, f.name, site.address))
+refs = {(r.function.start, r.address) for a in addresses for r in bv.get_code_refs(a)
+        if r.function.start not in stubs}
+print(f"{len(calls)} call sites; {len(refs)} code references (stub excluded)")
+for start, name, site in sorted(calls):
+    print(f"{site:#x}  {name} ({start:#x})")
+PY
+```
+
+### Inventory
+
+`total_bytes` sums basic-block lengths, including overlaps; it is neither an
+instruction count nor the span between a function's lowest and highest address.
+Library dependencies are file-wide. The per-symbol lookup below identifies the
+**type library** used for its type, when known; it does not prove which runtime
+library supplies the symbol.
+
+```sh
+binja py <<'PY'
+print(f"entry {bv.entry_point:#x}; {len(bv.functions)} functions")
+print("dependencies: " + (", ".join(bv.libraries) or "unknown"))
+for f in sorted(bv.functions, key=lambda f: f.total_bytes, reverse=True)[:10]:
+    print(f"{f.start:#x}  {f.total_bytes} bytes  {f.name}")
+kinds = {bn.SymbolType.ImportedFunctionSymbol, bn.SymbolType.ImportAddressSymbol,
+         bn.SymbolType.ExternalSymbol}
+for s in sorted(bv.get_symbols(), key=lambda s: (s.full_name, s.address)):
+    if s.type in kinds:
+        origin = bv.lookup_imported_object_library(s.address)
+        library = origin[0].name if origin else "unknown"
+        print(f"{s.address:#x}  {s.type.name}  {s.full_name}  type library: {library}")
+PY
+```
+
+## Requests and recovery
 
 Python, open, and save commands print a request ID to stderr before submitting.
-They normally wait up to 30 seconds after admission; there is no fixed polling
-delay. `--wait` is not an end-to-end command deadline. A client wait expiry exits
-2 and leaves the
-request queued or running; retrieve the existing request instead of repeating it:
+They normally wait up to 30 seconds after admission. `--wait` is not an
+end-to-end command deadline. A client wait expiry exits 2 and leaves the request queued
+or running; retrieve the existing request instead of repeating it:
 
 ```sh
 binja py --file slow_script.py --no-wait
@@ -120,61 +227,62 @@ binja cancel QUEUED_REQUEST_ID
 ```
 
 Replace the placeholders with returned IDs. `--no-wait` returns the acknowledged
-state immediately. Ordinary human submissions print only the pre-submission ID
-to stderr. An `Accepted: queued #N` receipt appears only when another unfinished
-request precedes this one (`waits_behind` is set); it names the retained target
-snapshot and predecessor. A recovered queued ID is labeled `Existing request`.
-An idle worker awaiting pickup is not a reason to print an acceptance receipt.
-Queue positions are live observations, not reservations. Cancel still removes
-queued work from execution.
+state immediately. An `Accepted: queued #N` receipt appears only when another
+unfinished request precedes this one (`waits_behind` is set); it names the
+retained target snapshot and predecessor. A recovered queued ID is labeled
+`Existing request`. Queue positions are live observations, not reservations.
 
-The serial worker accepts at most 8 unfinished requests, including the running
-request (normally one running plus seven queued). At the cap, rejection explicitly
-says the request was not accepted and will not execute, names the running request
-and queued count, and is safe to resubmit once capacity is available.
+There is one worker per session: batch per-function work into one script.
+Parallel shells can hide client overhead but do not parallelize worker
+execution. The worker accepts at most 8 unfinished requests, including the
+running request. At the cap, rejection explicitly says the request was not
+accepted and will not execute, names the running request and queued count, and
+is safe to resubmit once capacity is available.
 
-`requests` lists running/readiness-waiting work first, then queued work in order,
-then the five most recently finished requests. `requests --all` includes full
-history in the same order. Rows identify the request kind and script filename,
-target snapshot, phase, timing, pruned inline output, and errors. Finished rows
-separate queue wait from worker execution time, which includes analysis readiness.
-Unstarted cancellations have no execution time.
+`requests` lists running/readiness-waiting work first, then queued work in
+order, then the five most recently finished requests. `requests --all` includes
+full history in the same order. Rows identify the request kind and script
+filename, target snapshot, phase, timing, pruned inline output, and errors.
+Timings separate queue wait from worker occupancy, including analysis readiness.
 
 `requests --json` returns an object with `requests`, `finished_total`,
-`finished_shown`, `rejected_total`, and `rejections`. Rejected-at-cap attempts are
-separate from accepted records: the total covers the session, while the newest
-64 events remain in the rejection ring, oldest first. Default human listings
-summarize rejections by count; `--all` includes their retained events. Record fields
-`queue_wait_seconds` and `execution_seconds` separate queue time from worker time;
-`execution_seconds` is null before pickup. `elapsed_seconds` remains time since
-pickup for started work, otherwise since submission; terminal requests stop the
-clock. The serialized export has a 64 MiB limit.
+`finished_shown`, `rejected_total`, and `rejections`. Rejected-at-cap attempts
+are separate from accepted records: the total covers the session, while the
+newest 64 events remain in the rejection ring, oldest first. Default human
+listings summarize rejections by count; `--all` includes their retained events.
+Record fields `queue_wait_seconds` and `execution_seconds` separate queue time
+from worker time; `execution_seconds` is null before pickup, including unstarted
+cancellations. `elapsed_seconds` remains time since pickup for started work,
+otherwise since submission; terminal requests stop the clock. The serialized
+export has a 64 MiB limit.
 
-Human output keeps a short outcome and the payload; successful open/save commands
-print the resulting path once. `--verbose` appends the complete available record,
-including snapshots, timestamps, and stream previews. `--json` puts one full JSON
-record on stdout. For submissions, stderr carries a flat `submitting` event
-before RPC and an `accepted` event after acknowledgement, including for idle
-admission and duplicate recovery. These events are separate from the stdout
-record. A wait expiry adds `client_wait_expired: true` and `recovery_command` to
-the stdout record; human output names the expiry and prints the same command.
+Human output keeps a short outcome and the payload; successful open/save
+commands print the resulting path once. `--verbose` appends the complete
+available record, including snapshots, timestamps, and stream previews. `--json`
+puts one full JSON record on stdout. For submissions, stderr carries a flat
+`submitting` event before RPC and an `accepted` event after acknowledgement,
+including for idle admission (`existing: false`) and duplicate recovery
+(`existing: true`). A wait expiry adds `client_wait_expired: true` and
+`recovery_command` to the stdout record; human output names the expiry and
+prints the same command.
 
-Failed or cancelled requests exit 1 when submitted/retrieved. The `cancel` command
-itself exits 0 when cancellation succeeds, and 1 when refused. Status and request
-inspection remain available during worker execution.
+Failed or cancelled requests exit 1 when submitted/retrieved. The `cancel`
+command itself exits 0 when cancellation succeeds, and 1 when refused. It can
+cancel queued requests and pre-script analysis waits; running Python/native work
+cannot safely be interrupted. Status and request inspection remain available
+during execution.
 
-After a disconnect, inspect the printed ID. An unknown ID does not prove the script
-never ran. Reusing `--request-id` returns the original request without executing
-again. Do not automatically repeat mutations.
+After a read timeout or disconnect, inspect the printed ID. An unknown ID does
+not prove the script never ran. Recover with the same `--request-id`; do not
+automatically repeat mutations.
 
 The CLI normally generates IDs. To construct a custom `--request-id`, read
-`generation` from `binja status --json` and use `GENERATION:rUNIQUE_ID`.
-The generation is 12 lowercase hexadecimal characters; UNIQUE_ID is 1–64 ASCII
+`generation` from `binja status --json` and use `GENERATION:rUNIQUE_ID`. The
+generation is 12 lowercase hexadecimal characters; UNIQUE_ID is 1–64 ASCII
 letters, digits, underscores, or hyphens. For generation `abcdef123456`,
 `abcdef123456:rinspect_1` is valid. Use a new suffix for new work. Reusing an ID
-returns its original record even if the submitted source or target differs.
-Cancellation applies to queued requests and pre-script analysis waits; running
-Python/native work cannot safely be interrupted.
+returns its original record without executing again, even if the submitted
+source or target differs.
 
 Request records call the retained target description `target_snapshot`, with
 `target_snapshot_stage: "submission"`. For `open`, it is initially null and is

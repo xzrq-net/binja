@@ -20,3 +20,5 @@ Keep these as guide text unless `zbqnx2` turns one into a command.
 Also state plainly: one worker per session, so batch per-function work into a
 single script; parallel shells can hide client overhead but do not parallelize worker execution
 (closed `8vftez`).
+
+Closed: Added and live-validated all four guide recipes with the built Rust CLI from an external workspace: addressed HLIL/disassembly, persisted function name/comment, import callers excluding the stub, and inventory with precise total_bytes/type-library semantics. Consolidated recovery wording and stated one-worker batching.

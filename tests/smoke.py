@@ -115,6 +115,8 @@ def main():
         assert py("result = bv.file.filename")["result"] == str(sample_a)
         one_file = cli("status")
         assert one_file["file_count"] == 1 and one_file["view_count"] >= 2
+        status_text = subprocess.check_output([binary, "status"], cwd=workspace, env=env, text=True)
+        assert f"1 file ({one_file['view_count']} views)" in status_text
         b = cli("open", sample_b)["result"]["handle"]
         assert cli("status")["file_count"] == 2
         assert "ambiguous" in py("result = 0", code=1)["error"]
@@ -149,6 +151,7 @@ result = bv.file.filename
         queued = cli("py", "-c", "result = bv.file.filename", "--target", a, "--wait", ".01", code=2, receipts=receipts)
         accepted = receipts[-1]
         assert accepted["event"] == "accepted" and accepted["status"] == "queued"
+        assert accepted["existing"] is False
         assert accepted["queue_position"] == 1 and accepted["waits_behind"] == slow["id"]
         assert accepted["target_snapshot"]["handle"] == a
         assert queued["client_wait_expired"] and queued["recovery_command"]
@@ -168,7 +171,10 @@ result = bv.file.filename
             request_id=rejected_id, code=1)["error"]
         assert "not accepted and will not execute" in rejection
         assert slow["id"] in rejection and "7 queued" in rejection and "Safe to resubmit" in rejection
-        duplicate = py("raise AssertionError('must not replay')", a, no_wait=True, request_id=slow["id"])
+        duplicate_receipts = []
+        duplicate = cli("py", "-c", "raise AssertionError('must not replay')", "--target", a,
+            "--no-wait", "--request-id", slow["id"], receipts=duplicate_receipts)
+        assert duplicate_receipts[-1]["event"] == "accepted" and duplicate_receipts[-1]["existing"] is True
         assert duplicate["id"] == slow["id"] and duplicate["status"] == "running"
         human_rejection = subprocess.run([binary, "py", "-c", "result = 0", "--target", a, "--no-wait"],
             cwd=workspace, env=env, text=True, capture_output=True, timeout=10)
@@ -227,6 +233,8 @@ result = bv.file.filename
         failed = cli("py", "--target", a, "--file", script, code=1)
         assert str(script) in failed["traceback"] and "line 2" in failed["traceback"]
         assert failed["stdout"]["text"] == "before error\n"
+        assert failed["traceback"].splitlines()[1].startswith(f'  File "{script}", line 2')
+        assert "exec(compile(" not in failed["traceback"]
         output = py("import threading; t = threading.Thread(target=lambda: print('unrelated')); t.start(); t.join(); print('owned'); on_ui(lambda: print('ui-owned')); result = 2**64-1", a)
         assert output["stdout"]["text"] == "owned\nui-owned\n"
         assert output["result"] == 2**64 - 1
