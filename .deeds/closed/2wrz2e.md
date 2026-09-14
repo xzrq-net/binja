@@ -25,3 +25,5 @@ it once the command exists. bn separates `xrefs`, `refs`, and `callsites`; its
 
 Verify counts against the recipe on `bash` imports (malloc, free, strlen,
 memcpy were the trial's set).
+
+Closed: xrefs, refs, and callers delivered on the shared resolver and page contract; caller counts match the retired guide recipe on bash (malloc 47, free 1045, strlen 563, memcpy 41).

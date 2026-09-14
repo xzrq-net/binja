@@ -1,7 +1,8 @@
 # binja
 
 Use binja for static analysis with Binary Ninja Personal. Run commands from the
-analysis workspace. Typed commands cover code inspection; Python is the backstop.
+analysis workspace. Typed commands cover inspection and reference traversal;
+Python is the backstop.
 A GUI session persists between commands, executing requests in its bundled interpreter.
 
 ```sh
@@ -205,42 +206,36 @@ print(f"{f.start:#x}  {f.name}  {f.comment}")
 PY
 ```
 
-### Import callers
-
-Replace `malloc` with an import name from the inventory below. An import can
-have a stub (`ImportedFunctionSymbol`), an address slot (`ImportAddressSymbol`),
-and an external destination (`ExternalSymbol`). Collect all three; formats need
-not expose every kind. Exclude the import's own stub from callers.
-
-`call_sites` with `get_callees` asks which calls analysis resolves to these
-addresses. `get_code_refs` also finds non-call references, so its count need not
-match. Unresolved indirect calls may be absent from either result.
+### Reference traversal
 
 ```sh
-binja py <<'PY'
-name = "malloc"
-kinds = {bn.SymbolType.ImportedFunctionSymbol, bn.SymbolType.ImportAddressSymbol,
-         bn.SymbolType.ExternalSymbol}
-symbols = [s for s in bv.get_symbols_by_name(name) if s.type in kinds]
-assert symbols, f"No import named {name}"
-for s in symbols:
-    print(f"{s.address:#x}  {s.type.name}  {s.full_name}")
-addresses = {s.address for s in symbols}
-stubs = {s.address for s in symbols if s.type == bn.SymbolType.ImportedFunctionSymbol}
-calls = set()
-for f in bv.functions:
-    if f.start in stubs:
-        continue
-    for site in f.call_sites:
-        if addresses.intersection(bv.get_callees(site.address, f, site.arch)):
-            calls.add((f.start, f.name, site.address))
-refs = {(r.function.start, r.address) for a in addresses for r in bv.get_code_refs(a)
-        if r.function.start not in stubs}
-print(f"{len(calls)} call sites; {len(refs)} code references (stub excluded)")
-for start, name, site in sorted(calls):
-    print(f"{site:#x}  {name} ({start:#x})")
-PY
+binja xrefs g_entities              # Inbound references to this exact address
+binja xrefs main
+binja refs main                     # Outbound references from the function
+binja callers malloc               # Resolved call sites, with import stubs excluded
+binja callers malloc --offset 64
 ```
+
+`xrefs ADDRESS|FUNCTION` lists inbound code and data references separately,
+including source addresses and their functions (or no containing function).
+Exact function names select their start; an address or `symbol+offset` stays at
+that address. `refs FUNCTION` lists outbound source/destination pairs within the
+function's analyzed basic blocks, excluding gaps. Code/data classify the **source**:
+an instruction referencing a global variable is a code reference. References
+include non-call uses; use `callers` for resolved calls.
+
+`callers NAME|ADDRESS` combines an import's stub (`ImportedFunctionSymbol`),
+address slot (`ImportAddressSymbol`) and external destination (`ExternalSymbol`)
+by name; any of those addresses selects the same import. Formats need not expose
+all three. The import's own stubs are excluded. For ordinary functions, use an
+exact name or destination address. Call sites come from `call_sites` resolved
+through `get_callees`; the separately reported code-reference count can differ.
+Zero discovered references is not proof of no callers: unresolved indirect calls
+may be absent from either result.
+
+All three commands use `--offset/--limit` with 64 rows by default. Counts describe
+the full query, even on an empty page. The footer supplies the next offset;
+restart pagination after edits or reanalysis.
 
 ### Inventory
 

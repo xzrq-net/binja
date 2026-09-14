@@ -72,7 +72,7 @@ struct Page {
     #[arg(
         long,
         default_value = "0",
-        help = "Skip rendered rows (function listings only)"
+        help = "Skip rows (not available for linear disassembly)"
     )]
     offset: usize,
     #[arg(long, default_value = "64", value_parser = clap::value_parser!(u32).range(1..), help = "Maximum rendered rows per page")]
@@ -184,6 +184,32 @@ enum Commands {
             help = "Exclusive end address for linear decoding"
         )]
         end: Option<String>,
+        #[command(flatten)]
+        page: Page,
+        #[command(flatten)]
+        execution: Execution,
+    },
+    #[command(about = "List inbound code and data references to an address or function")]
+    Xrefs {
+        #[arg(value_name = "ADDRESS|FUNCTION")]
+        identifier: String,
+        #[command(flatten)]
+        page: Page,
+        #[command(flatten)]
+        execution: Execution,
+    },
+    #[command(about = "List outbound code and data references from a function")]
+    Refs {
+        function: String,
+        #[command(flatten)]
+        page: Page,
+        #[command(flatten)]
+        execution: Execution,
+    },
+    #[command(about = "List resolved inbound call sites, excluding an import's own stubs")]
+    Callers {
+        #[arg(value_name = "NAME|ADDRESS")]
+        identifier: String,
         #[command(flatten)]
         page: Page,
         #[command(flatten)]
@@ -450,10 +476,28 @@ fn run(cli: &Cli) -> Result<i32> {
             page,
             execution,
             ..
+        }
+        | Commands::Xrefs {
+            identifier: function,
+            page,
+            execution,
+        }
+        | Commands::Refs {
+            function,
+            page,
+            execution,
+        }
+        | Commands::Callers {
+            identifier: function,
+            page,
+            execution,
         } => {
             let mut args = json!({"function":function,"offset":page.offset,"limit":page.limit});
             let kind = match &cli.command {
                 Commands::Decompile { .. } => "decompile",
+                Commands::Xrefs { .. } => "xrefs",
+                Commands::Refs { .. } => "refs",
+                Commands::Callers { .. } => "callers",
                 Commands::Il { view, ssa, .. } => {
                     args["view"] = json!(view);
                     args["ssa"] = json!(ssa);

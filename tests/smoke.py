@@ -394,8 +394,9 @@ for index, address in args.items():
         phase("Ambiguous names/addresses and skipped analysis fail explicitly")
         renamed = py("fs = list(bv.functions)[:2]; result = [(hex(f.start), f.name) for f in fs]; "
             "[setattr(f, 'name', 'binja_ambiguous') for f in fs]", a)["result"]
-        error = cli("decompile", "binja_ambiguous", "--target", a, code=1)["error"]
-        assert "Ambiguous function" in error and all(address in error for address, _ in renamed)
+        for command in ("decompile", "xrefs", "refs", "callers"):
+            error = cli(command, "binja_ambiguous", "--target", a, code=1)["error"]
+            assert "Ambiguous function" in error and all(address in error for address, _ in renamed)
         error = cli("disasm", "binja_ambiguous+1", "--count", "1", "--target", a, code=1)["error"]
         assert "Ambiguous address" in error and all(address in error for address, _ in renamed)
         py("for address, name in args:\n    bv.get_function_at(int(address, 16)).name = name", a, args=json.dumps(renamed))
@@ -416,9 +417,115 @@ result = platform.name
         py(f"bv.get_function_at({start}).analysis_skipped = False; bv.update_analysis_and_wait()", a)
         for arguments in (("il", start, "--view", "invalid"), ("decompile", start, "--limit", "0"),
                 ("disasm", start, "--count", "0"), ("disasm", start, "--count", "1", "--end", start),
-                ("disasm", start, "--count", "1", "--offset", "1"), ("il", start, "--offset", "-1")):
+                ("disasm", start, "--count", "1", "--offset", "1"), ("il", start, "--offset", "-1"),
+                ("xrefs", start, "--limit", "0"), ("refs", start, "--offset", "-1"),
+                ("callers", start, "--limit", "0")):
             invalid = subprocess.run([binary, *arguments], cwd=workspace, env=env, text=True, capture_output=True)
             assert invalid.returncode == 2 and "Request " not in invalid.stderr
+
+        phase("Reference traversal: native sources, import normalization, and calls versus references")
+        data = py("s = next(s for s in bv.get_symbols() if s.type == bn.SymbolType.DataSymbol "
+            "and list(bv.get_data_refs(s.address))); result = dict(name=s.full_name, address=hex(s.address))", a)["result"]
+        for subject, address in ((name, start), (data["name"], data["address"])):
+            inbound = payload(cli("xrefs", subject, "--target", a, "--limit", "10000"))
+            native = py("address = int(args, 16); result = dict("
+                "code=sorted((hex(r.address), hex(r.function.start)) for r in bv.get_code_refs(address)), "
+                "data=sorted(map(hex, bv.get_data_refs(address))))", a, args=json.dumps(address))["result"]
+            assert sorted([r["address"], f["start"]] for r in inbound["rows"] if r["kind"] == "code"
+                for f in r["functions"]) == native["code"]
+            assert sorted(r["address"] for r in inbound["rows"] if r["kind"] == "data") == native["data"]
+            assert inbound["counts"] == dict(code_references=len(native["code"]), data_references=len(native["data"]))
+            assert inbound["direction"] == "inbound" and inbound["relation"] == "reference"
+            assert inbound["addresses"] == [address]
+
+        imports = py("""kinds = {bn.SymbolType.ImportedFunctionSymbol, bn.SymbolType.ImportAddressSymbol, bn.SymbolType.ExternalSymbol}
+symbol = next(s for s in bv.get_symbols() if s.type == bn.SymbolType.ImportedFunctionSymbol)
+symbols = [s for s in bv.get_symbols_by_name(symbol.full_name) if s.type in kinds]
+result = dict(name=symbol.full_name, addresses=sorted({hex(s.address) for s in symbols}),
+    stubs=sorted({hex(s.address) for s in symbols if s.type == bn.SymbolType.ImportedFunctionSymbol}))
+""", a)["result"]
+        recipe = """addresses = {int(a, 16) for a in args['addresses']}
+stubs = {int(a, 16) for a in args['stubs']}
+calls = set()
+for f in bv.functions:
+    if f.start in stubs:
+        continue
+    for site in f.call_sites:
+        if addresses.intersection(bv.get_callees(site.address, f, site.arch)):
+            calls.add((hex(f.start), f.name, hex(site.address)))
+refs = {(r.function.start, r.address) for address in addresses for r in bv.get_code_refs(address)
+    if r.function.start not in stubs}
+result = dict(calls=sorted(calls), counts=dict(call_sites=len(calls), code_references=len(refs)))
+"""
+        expected = py(recipe, a, args=json.dumps(imports))["result"]
+        baseline = payload(cli("callers", imports["name"], "--target", a, "--limit", "10000"))
+        assert baseline["counts"] == expected["counts"]
+        assert sorted([r["function"]["start"], r["function"]["name"], r["address"]] for r in baseline["rows"]) == expected["calls"]
+        assert baseline["excluded_stubs"] == imports["stubs"]
+        assert all(r["function"]["start"] not in imports["stubs"] for r in baseline["rows"])
+        for address in imports["addresses"]:
+            alias = payload(cli("callers", address, "--target", a, "--limit", "10000"))
+            assert alias["addresses"] == baseline["addresses"] and alias["rows"] == baseline["rows"]
+            assert alias["counts"] == baseline["counts"]
+
+        # A user reference on a non-call instruction must not become a call site.
+        fixture = py("""f = bv.get_function_at(int(args['start'], 16))
+destination = int(args['import'], 16)
+call_addresses = {site.address for site in f.call_sites}
+source = next(address for _, address in f.instructions if address not in call_addresses
+    and destination not in bv.get_code_refs_from(address, f))
+f.add_user_code_ref(source, destination)
+bv.add_user_data_ref(f.start + 1, int(args['data'], 16))
+result = dict(source=hex(source), destination=hex(destination), data_source=hex(f.start + 1))
+""", a, args=json.dumps({"start": start, "import": imports["stubs"][0], "data": data["address"]}))["result"]
+        try:
+            changed = payload(cli("callers", imports["name"], "--target", a, "--limit", "10000"))
+            assert changed["rows"] == baseline["rows"]
+            assert changed["counts"]["code_references"] == baseline["counts"]["code_references"] + 1
+            assert changed["counts"]["call_sites"] == baseline["counts"]["call_sites"]
+            inbound = payload(cli("xrefs", imports["stubs"][0], "--target", a, "--limit", "10000"))
+            assert any(r["kind"] == "code" and r["address"] == fixture["source"] for r in inbound["rows"])
+            inbound = payload(cli("xrefs", data["name"], "--target", a, "--limit", "10000"))
+            assert any(r["kind"] == "data" and r["address"] == fixture["data_source"]
+                and any(f["start"] == start for f in r["functions"]) for r in inbound["rows"])
+            # Independently recover outbound edges by range queries and inverse lookup.
+            native = py("""f = bv.get_function_at(int(args, 16))
+blocks = list(f.basic_blocks)
+inside = lambda address: any(b.start <= address < b.end for b in blocks)
+code_targets = {dest for b in blocks for dest in bv.get_code_refs_from(b.start, f, b.arch, b.end - b.start)}
+data_targets = {dest for b in blocks for dest in bv.get_data_refs_from(b.start, b.end - b.start)}
+edges = {('code', hex(r.address), hex(dest)) for dest in code_targets for r in bv.get_code_refs(dest)
+    if r.function == f and inside(r.address)}
+edges.update(('data', hex(source), hex(dest)) for dest in data_targets for source in bv.get_data_refs(dest) if inside(source))
+result = sorted(edges)
+""", a, args=json.dumps(start))["result"]
+            outbound = payload(cli("refs", name, "--target", a, "--limit", "10000"))
+            assert outbound["direction"] == "outbound" and outbound["relation"] == "reference"
+            assert sorted([r["kind"], r["address"], r["to"]] for r in outbound["rows"]) == native
+            assert ["data", fixture["data_source"], data["address"]] in native
+            interior = payload(cli("xrefs", name + "+1", "--target", a))
+            assert interior["addresses"] == [fixture["data_source"]]  # Exact address, not function start.
+            for command, subject in (("xrefs", data["name"]), ("refs", name), ("callers", imports["name"])):
+                whole = payload(cli(command, subject, "--target", a, "--limit", "10000"))
+                first = cli(command, subject, "--target", a, "--limit", "1")
+                tail = payload(cli(command, subject, "--target", a, "--offset", "1", "--limit", "10000"))
+                assert payload(first)["rows"] + tail["rows"] == whole["rows"]
+                assert payload(first)["counts"] == whole["counts"] == tail["counts"]
+                assert first["kind"] == command and payload(first)["page"]["total"] == len(whole["rows"])
+                human = subprocess.check_output([binary, "request", first["id"]], cwd=workspace, env=env, text=True)
+                assert command in human and '"rows":' not in human
+                assert whole["direction"] in human and "code" in human and "reference" in human
+                assert ("call from" if command == "callers" else "data references") in human
+        finally:
+            py("f = bv.get_function_at(int(args['start'], 16)); "
+                "f.remove_user_code_ref(int(args['source'], 16), int(args['destination'], 16)); "
+                "bv.remove_user_data_ref(int(args['data_source'], 16), int(args['data'], 16))",
+                a, args=json.dumps(fixture | dict(start=start, data=data["address"])))
+        for command in ("xrefs", "callers"):
+            empty = retrieve(cli(command, "0xffffffffffff0000", "--target", a, "--no-wait"))
+            assert empty["kind"] == command and payload(empty)["rows"] == []
+            assert payload(empty)["page"]["next_offset"] is None
+            assert "Zero references is not proof of no callers" in empty["stdout"]["text"]
 
         phase("Queue receipts, pending cap, cancellation, expiry, and listing")
         release = workspace / "release-worker"

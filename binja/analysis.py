@@ -44,11 +44,15 @@ def resolve_address(bv, identifier):
         "other expressions are available through py with bv.parse_expression.")
 
 
-def resolve_function(bv, identifier):
+def named_function(bv, identifier):
     named = bv.get_functions_by_name(identifier)
     for symbol in bv.get_symbols_by_raw_name(identifier):
         named.extend(bv.get_functions_at(symbol.address))
-    function = one_function(named, identifier)
+    return one_function(named, identifier)
+
+
+def resolve_function(bv, identifier):
+    function = named_function(bv, identifier)
     if function is not None:
         return function
     try:
@@ -123,11 +127,7 @@ def emit_listing(result, continuation=None):
         print(f"{address:12}  {detail}{row['text']}".rstrip())
     page = result["page"]
     if function:
-        end = page["offset"] + page["returned"]
-        span = f"{page['offset']}-{end - 1}" if page["returned"] else f"none at offset {page['offset']}"
-        footer = f"rows {span} of {page['total']}"
-        if page["next_offset"] is not None:
-            footer += f"; continue with --offset {page['next_offset']}"
+        print_page(page)
     else:
         footer = f"{page['returned']} instructions; next address {result['next_address']}"
         if result["stopped_reason"]:
@@ -136,21 +136,35 @@ def emit_listing(result, continuation=None):
             footer += f"; continue with {continuation}"
         else:
             footer += "; requested extent complete"
+        print(footer)
+
+
+def page_rows(items, offset, limit):
+    rows = []
+    total = 0
+    for row in items:
+        if offset <= total < offset + limit:
+            rows.append(row)
+        total += 1
+    next_offset = offset + len(rows) if offset + len(rows) < total else None
+    return rows, dict(offset=offset, limit=limit, returned=len(rows), total=total, next_offset=next_offset)
+
+
+def print_page(page):
+    end = page["offset"] + page["returned"]
+    span = f"{page['offset']}-{end - 1}" if page["returned"] else f"none at offset {page['offset']}"
+    footer = f"rows {span} of {page['total']}"
+    if page["next_offset"] is not None:
+        footer += f"; continue with --offset {page['next_offset']}"
     print(footer)
 
 
 def function_listing(request, function, view, offset, limit, ssa=False):
-    rows = []
-    total = 0
-    for row in rendered_rows(function, view, ssa):
-        if offset <= total < offset + limit:
-            rows.append(row)
-        total += 1
-    if not total:
+    rows, page = page_rows(rendered_rows(function, view, ssa), offset, limit)
+    if not page["total"]:
         raise Error(f"No {view} rendering available for {function.name} @ {function.start:#x}.")
-    next_offset = offset + len(rows) if offset + len(rows) < total else None
     result = dict(target=request["target_snapshot"]["handle"], function=function_info(function),
         view=view, ssa=ssa, address_kind="anchor" if view in ("pseudo-c", "hlil") else "instruction",
-        rows=rows, page=dict(offset=offset, limit=limit, returned=len(rows), total=total, next_offset=next_offset))
+        rows=rows, page=page)
     emit_listing(result)
     return result

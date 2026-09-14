@@ -53,8 +53,8 @@ submissions are rejected before admission. A response that exceeds its bound
 returns an error without changing the execution outcome.
 
 Requests contain `protocol: 3`, `generation`, `op`, and operation parameters.
-`submit` carries `spec` with `id`, `kind` (`py`, `open`, `save`, `decompile`, `il`, or `disasm`; default `py`),
-`source`, `filename`, `args`, `target`, `no_target`, and `allow_incomplete`.
+`submit` carries `spec` with `id`, `kind` (`py`, `open`, `save`, `decompile`, `il`,
+`disasm`, `xrefs`, `refs`, or `callers`; default `py`), `source`, `filename`, `args`, `target`, `no_target`, and `allow_incomplete`.
 `submit` and `request` accept `wait`, default 0, as finite nonnegative seconds
 within the server platform's timeout range. The wait budget starts after
 admission/lookup; it is not an end-to-end CLI deadline.
@@ -240,16 +240,39 @@ duplicate result printing for these kinds in human mode, including recovered
 requests. The envelope and spill boundary are unchanged. Text and JSON artifacts
 remain independently readable; command-specific output stays in `result` and stdout.
 
-Function pages use `--offset/--limit` (64 rendered rows by default), reporting
+Function and reference pages use `--offset/--limit` (64 rows by default), reporting
 returned/total counts and next offset. Linear pages continue by address and
 remaining count/end. Pagination rerenders the current view, with no stored
-cursors; edits or reanalysis require restarting pagination. Rows carry native
-hexadecimal `address` and `text`, plus nullable `il_index` for IL or `bytes` for
+cursors; edits or reanalysis require restarting pagination. Inspection rows carry
+native hexadecimal `address` and `text`, plus nullable `il_index` for IL or `bytes` for
 disassembly. Blank-row addresses are null. Pseudo C/HLIL addresses are identified
 as anchors, not individual machine instruction addresses. `result` also contains
 target/function identity, representation and page/extent metadata. Read commands
 can reuse this contract with their own row fields; byte spilling does not replace
 semantic scoping.
+
+`xrefs` resolves an exact function name to its start, or uses the exact ADDRESS;
+interior addresses stay interior. It lists inbound references with rows
+`{kind, address, functions: [{name, start}]}`; data sources can have no containing
+function. `refs FUNCTION` lists outbound references whose sources lie in analyzed
+basic blocks, excluding gaps, as `{kind, address, to}`. `kind` is `code` or `data`
+according to the reference source, not its destination; neither implies a call.
+Both preserve native auto and user references.
+
+`callers` lists resolved `call_sites` through `get_callees`, with rows
+`{address, function: {name, start}}`. Import names and any of their stub, slot or
+external addresses select the whole import; its own stubs are excluded from both
+call-site and code-reference counts. These counts are independent. Zero
+references is not proof of no callers because unresolved indirect calls may be
+absent; inbound text states this limitation.
+
+`binja/references.py` owns import normalization and reference text, reusing the
+resolver and page helpers in `analysis.py`. Reference results include query,
+target/function identity, resolved addresses, direction (`inbound`/`outbound`),
+relation (`reference`/`call`), counts, rows and page metadata; `callers` also records
+import symbols and excluded stubs. Counts always cover the full query. Reference
+pages order code before data, then source and destination; caller pages order
+by function start/name, then call-site address. Pagination recomputes the query.
 
 ## Execution and recovery
 

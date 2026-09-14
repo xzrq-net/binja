@@ -1024,3 +1024,63 @@ Filed 685369 for the existing 60-second GUI startup-readiness deadline: it kills
 a session whose plugin never starts, limiting the time available to inspect
 startup dialogs. The present commands work while its compositor is alive;
 changing that lifecycle policy is separate work.
+
+## 2026-09-13 — Reference traversal and import caller verification
+
+Implemented 2wrz2e's `xrefs`, `refs` and `callers` as Python command scripts with
+separate request kinds on the existing worker. Shared exact-name resolution and
+page helpers stay in `analysis.py`; `references.py` handles import normalization
+and reference text. Python prints direction, code/data source kind, call/reference
+semantics, counts and continuation. Rows remain lean; no envelope fields or error
+taxonomy were added. Retired the guide's Import callers Python recipe in favor
+of the commands and documented the reference contract in design.md.
+
+The address decision is exact: `xrefs main+1` queries that byte, while `refs`
+resolves the containing function. Outbound references are scoped to analyzed
+basic-block ranges, excluding gaps. Byte-wise queries preserve user data
+references inside instructions. Code/data classify the source: instructions
+referencing globals are code references. `callers` normalizes an import name or
+any of its stub/slot/external addresses to the same import group, excludes its
+own stubs, and independently counts resolved call sites and code references.
+Inbound output states that zero references is not proof of no callers.
+
+Started Binary Ninja 6.0.10601 Personal in the checkout's `.binja`, opened
+`temp/samples/a/sample` and reused `temp/typed/bash`, the scratch copy of the
+requested bash 5.3p9 executable. Neither binary was executed. Captured the guide
+recipe before replacing it, then compared each command's complete call-site set
+and both counts against it. All matched:
+
+| Bash import | Resolved call sites | Code references, stubs excluded |
+| --- | ---: | ---: |
+| malloc | 47 | 47 |
+| free | 1,045 | 1,045 |
+| strlen | 563 | 563 |
+| memcpy | 41 | 41 |
+
+Each import's three representation addresses also returned the same counts and
+normalized address set. Sample `xrefs` matched native `get_code_refs` and
+`get_data_refs`: `main` at `0x40122e` had 1/0 code/data references;
+`__dso_handle` at `0x404008` had 1/1, `g_entities` at `0x404120` had 7/0, and
+`_typeinfo_for_Entity` at `0x403ca8` had 0/2. Sources outside functions are
+explicitly reported without a containing function. Sample `refs main` found
+108 code references. Bash's largest function, `read_token.constprop.0`, had
+2,502 outbound code references; a full query took about 60 ms including the CLI.
+
+Retained the 64-row default. Measured every page for `callers free`,
+`callers strlen`, `xrefs free`, and `refs read_token.constprop.0`. Maximum
+stdout/result bytes were respectively 3,992/6,697, 3,759/6,464, 3,551/7,724,
+and 1,590/4,200, all below the 16,384-byte inline threshold. Scratch recipe,
+command records, comparisons and measurements are under `temp/references/`.
+No new peer code was borrowed.
+
+`cargo test` passed all six checks; Python execution/protocol/API-index suites
+passed 6/5/4. `nix build` succeeded, then the installed smoke command
+`python3 tests/smoke.py --binja ./result/bin/binja --sample temp/samples/a/sample`
+passed in `/tmp/binja-smoke-pw81vxh8`. New coverage compares inbound references
+with native queries and outbound edges with range queries plus inverse lookup;
+checks import aliases and stub exclusion against the recipe; adds a user
+reference on a non-call instruction and proves only the code-reference count
+increases; and checks data sources inside functions, exact interior addresses,
+ambiguity, pagination, text recovery, no-wait requests and empty-result warnings.
+Existing inspection, transport, save/reopen and shutdown checks still pass.
+Verification covered x86-64 ELF binaries. Stopped the checkout GUI cleanly.
