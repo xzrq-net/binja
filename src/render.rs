@@ -132,6 +132,15 @@ pub fn row(v: &Value) -> String {
     }
     line
 }
+fn display_line(v: &Value) -> String {
+    if v["display"] == "desktop" {
+        return format!("GUI on the desktop  {}", text(v, "wayland_socket"));
+    }
+    match v["vnc_socket"].as_str() {
+        Some(socket) => format!("GUI on a private compositor  VNC {socket}"),
+        None => "GUI on a private compositor  VNC server exited".into(),
+    }
+}
 fn analysis(v: &Value) -> &str {
     match text(v, "analysis") {
         "IdleState" => "analysis complete",
@@ -348,13 +357,14 @@ pub fn render(
                 }
             }
             "start" => println!(
-                "{} Binary Ninja {}  GUI on a private Wayland compositor\nState: {}  generation {}",
+                "{} Binary Ninja {}  {}\nState: {}  generation {}",
                 if v["reused"] == true {
                     "Reused"
                 } else {
                     "Started"
                 },
                 text(v, "version"),
+                display_line(v),
                 text(v, "state_dir"),
                 text(v, "generation")
             ),
@@ -377,7 +387,9 @@ pub fn render(
                             rows.len() - queued
                         );
                     }
+                    println!("{}", display_line(v));
                     match v["modal_open"].as_bool() {
+                        Some(true) if v["display"] == "desktop" => println!("Modal: open on the desktop"),
                         Some(true) => println!("Modal: open; see binja screenshot and binja input"),
                         Some(false) => (),
                         None => println!("Modal: unknown"),

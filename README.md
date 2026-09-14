@@ -1,7 +1,8 @@
 # Headless Binary Ninja
 
 `binja` is a CLI for agent-driven static analysis with Binary Ninja Personal.
-It manages a persistent GUI on a private Wayland compositor and provides typed
+It manages a persistent GUI on a private Wayland compositor, viewable over VNC
+or optionally shown on your desktop, and provides typed
 analysis commands with Python as the backstop. It includes API lookup, recoverable requests,
 and explicit database saves. The client and session supervisor are one Rust
 binary; scripts and the resident plugin run in Binary Ninja's bundled Python.
@@ -50,6 +51,18 @@ Copy results you need to keep before stopping.
 `decompile`, `il`, and `disasm` render the GUI's own listings in bounded pages;
 functions resolve by exact name or address, and ambiguity is an error rather
 than a guess.
+
+To watch or drive the private GUI yourself, connect a VNC viewer to the Unix
+socket printed by `binja start` and `binja status`, with no password (the state
+directory is owner-only):
+
+```sh
+vncviewer .binja/runtime/vnc.sock   # TigerVNC
+```
+
+`binja start --display desktop` shows the GUI on your own Wayland display
+instead. That mode has no `screenshot` or `input` commands; the display is
+fixed until `binja stop`.
 
 ## Development
 

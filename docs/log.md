@@ -1430,3 +1430,45 @@ Verification: `cargo test` (10), `tests/execution.py` (9), `tests/api_index.py`
 (5), `tests/protocol.py` (5), the bridge suite against the nix package, and the
 installed smoke suite against `temp/investigation/target`. Live transcripts,
 doc-change proposals and suite logs are under `temp/ux-*`.
+
+## 2026-09-14 — Headless VNC access and desktop display mode
+
+Implemented `an2dc3` on the host, outside the dev container, against a
+Hyprland session with `WAYLAND_DISPLAY=wayland-1`.
+
+Headless mode now always starts wayvnc 0.10.0 as a third owned child after
+labwc, listening on `runtime/vnc.sock` with no VNC authentication (the
+owner-only runtime directory is the access control), cursor overlay on, and
+its control socket pinned to `runtime/wayvncctl`. Always-on was chosen over a
+flag: an idle wayvnc requests no screencopy frames until a client connects,
+the extra process is cheap, and one fewer mode keeps the session shape
+uniform. The cost is closure size: nixpkgs wayvnc pulls ffmpeg, about 340 MB.
+A wayvnc exit is logged and reported as a null `vnc_socket` without ending
+the session; any other child exit still does. A scratch probe
+(`temp/vnc_probe.py`) confirmed that labwc's pixman headless output
+(HEADLESS-1, 1280x720) is captured and that a raw RFB 3.8 client completes
+the handshake over the Unix socket. TigerVNC's `vncviewer` accepts a Unix
+socket path directly; wlvncc does not.
+
+`start --display desktop` resolves the caller's `WAYLAND_DISPLAY` against
+`XDG_RUNTIME_DIR` to an absolute socket path, verifies it is a socket, and the
+supervisor passes that absolute path as `WAYLAND_DISPLAY` to the GUI while
+still redirecting XDG runtime state. libwayland accepts absolute socket
+paths, so no symlink or runtime-directory sharing is needed, and a
+bind-mounted host socket in a container works the same way. Desktop sessions
+refuse `screenshot` and `input` explicitly. The display is recorded in
+supervisor metadata; `start` with the other mode against a running session
+is an error. The GUI plugin no longer hardcodes `display`; the CLI copies
+`display`, `vnc_socket`, and `wayland_socket` from the supervisor into status.
+
+Verification: `cargo test` (10), `tests/protocol.py`, `tests/gui_status.py`,
+`nix build`, installed `binja skill` matching the guide, offline smoke, and
+the full headless smoke suite with the dev build (`temp/smoke-vnc.log`),
+which now checks that the VNC framebuffer matches the grim capture size,
+receives a FramebufferUpdate, and that an Escape KeyEvent sent through the
+VNC socket dismisses a Qt modal; that the supervisor owns three children;
+and that force stop removes `vnc.sock` and `wayvncctl`. The `tests/smoke.py
+--desktop` phase (start on the shell's display, mode conflict error, open,
+decompile, screenshot/input refusal, unsaved guard, save, stop) is written
+but has not yet been run: it opens a window on the ambient display and is
+waiting for the user's go-ahead.

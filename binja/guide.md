@@ -22,9 +22,15 @@ working directory constant across calls, or pass `--state-dir /abs/path/.binja`
 on each. binja never searches parent directories or other running instances.
 
 `start` starts or reuses a GUI on a private headless Wayland compositor, with
-the license from `~/.binaryninja/license.dat` or `--license PATH`. Restart
-sessions after upgrading the package. If `start` or `status` reports a newer
-stable release, tell the user; upgrading needs a package rebuild.
+the license from `~/.binaryninja/license.dat` or `--license PATH`. A human can
+watch or drive that GUI by pointing a VNC viewer at the Unix socket `start`
+and `status` print (TigerVNC: `vncviewer .binja/runtime/vnc.sock`).
+`start --display desktop` instead opens the GUI on the shell's own
+`WAYLAND_DISPLAY`; there `screenshot` and `input` are unavailable and the
+human dismisses dialogs directly. The display is fixed for the session: stop
+before switching. Restart sessions after upgrading the package. If `start` or
+`status` reports a newer stable release, tell the user; upgrading needs a
+package rebuild.
 
 `open` takes a binary or BNDB. Save at work boundaries and before stopping:
 `save PATH.bndb` needs a path outside session state, keeps updating that

@@ -96,7 +96,7 @@ enum Commands {
         #[command(subcommand)]
         command: Api,
     },
-    #[command(about = "Start or reuse a private Wayland session")]
+    #[command(about = "Start or reuse a session on a private compositor or the desktop")]
     Start {
         #[arg(long)]
         license: Option<PathBuf>,
@@ -105,7 +105,8 @@ enum Commands {
             help = "Keep a new session alive past the 60-second GUI readiness deadline"
         )]
         no_startup_deadline: bool,
-        #[arg(long, default_value="headless", value_parser=["headless"])]
+        #[arg(long, default_value="headless", value_parser=["headless", "desktop"],
+            help = "headless: private compositor with a VNC socket; desktop: this shell's WAYLAND_DISPLAY")]
         display: String,
     },
     #[command(about = "Show the session, file/view counts, and pending work")]
@@ -350,6 +351,8 @@ enum Commands {
         license: PathBuf,
         #[arg(long)]
         no_startup_deadline: bool,
+        #[arg(long)]
+        wayland_socket: Option<PathBuf>,
     },
 }
 #[derive(Subcommand)]
@@ -441,9 +444,14 @@ fn run(cli: &Cli) -> Result<i32> {
         state,
         license,
         no_startup_deadline,
+        wayland_socket,
     } = &cli.command
     {
-        session::serve(state, license, &resources, *no_startup_deadline)?;
+        let display = match wayland_socket {
+            Some(socket) => session::Display::Desktop(socket.clone()),
+            None => session::Display::Headless,
+        };
+        session::serve(state, license, &resources, *no_startup_deadline, &display)?;
         return Ok(0);
     }
     if matches!(cli.command, Commands::Skill) {
@@ -474,9 +482,15 @@ fn run(cli: &Cli) -> Result<i32> {
         Commands::Start {
             license,
             no_startup_deadline,
-            ..
+            display,
         } => (
-            session::start(&state, license.as_deref(), &resources, *no_startup_deadline)?,
+            session::start(
+                &state,
+                license.as_deref(),
+                &resources,
+                *no_startup_deadline,
+                &session::Display::resolve(display)?,
+            )?,
             "start",
             false,
         ),

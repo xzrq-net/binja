@@ -59,7 +59,7 @@ class Bridge:
         operation = request["op"]
         if operation in ("hello", "status"):
             config = build_config()
-            result = dict(generation=self.generation, version=bn.core_version(), display="headless",
+            result = dict(generation=self.generation, version=bn.core_version(),
                 state_dir=str(self.state), docs=config["vendor"] + "/api-docs", python=__import__("sys").version)
             if operation == "status":
                 result.update(self.gui_status())

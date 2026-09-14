@@ -99,7 +99,8 @@ belong in the package when a concrete workflow needs them.
 The binary resolves plugin resources and build metadata from `../lib/binja`
 relative to its executable. Development builds fall back to the checkout's
 `binja/` directory; `BINJA_RESOURCE_DIR` explicitly overrides the resource path.
-Build metadata names the immutable vendor, FHS launcher, and labwc paths. The
+Build metadata names the immutable vendor, FHS launcher, labwc, wayvnc, and
+compositor helper paths. The
 supervisor injects the selected plugin directory into the GUI's bundled Python.
 
 Upgrades change the archive pin and rebuild the CLI/plugin and matching API index
@@ -137,7 +138,8 @@ before contacting the application.
     control.sock         supervisor endpoint
     instance.json        generation and discovery metadata
     lock                 exclusive session ownership
-    wayland-0            private compositor socket
+    wayland-0            private compositor socket (headless mode)
+    vnc.sock, wayvncctl  wayvnc viewer and control sockets (headless mode)
   tmp/ logs/ artifacts/
 ```
 
@@ -158,7 +160,7 @@ Shutdown sends SIGTERM to owned groups, escalates after five seconds to SIGKILL,
 and confirms group disappearance with killpg(0)/ESRCH before retiring artifacts
 or endpoints and releasing the lock. The supervisor is a child subreaper so it
 can reap orphan descendants even after their group leader exits. Its main thread
-spawns both children with PR_SET_PDEATHSIG/SIGKILL and a parent-identity recheck;
+spawns every child with PR_SET_PDEATHSIG/SIGKILL and a parent-identity recheck;
 the packaged GUI launcher also uses bubblewrap's die-with-parent behavior.
 Concurrent starts, including callers arriving during initialization, wait for
 the winning lock owner's receiver and reuse its generation.
@@ -200,12 +202,26 @@ Python bypasses the managed checks and GUI retirement.
 
 ## Display modes
 
-Sessions use a private labwc compositor with a headless backend and software
-rendering. Qt selects native Wayland. Desktop Wayland and optional wayvnc access
-are planned in deeds; display choice remains a startup property. Attaching to an
-unmanaged GUI or moving a live process between compositors is outside scope.
+`start --display headless` (the default) runs a private labwc compositor with a
+headless backend and software rendering, plus wayvnc listening on the Unix
+socket `runtime/vnc.sock` with no VNC authentication: the owner-only runtime
+directory is the access control. wayvnc renders the cursor into the stream and
+keeps its control socket at `runtime/wayvncctl`. Both helpers are owned children
+started in order, each awaited by its socket; a wayvnc exit is logged, reported
+as a null `vnc_socket`, and does not end the session, while any other child exit
+does. `start --display desktop` connects the GUI to the caller's compositor
+instead: the CLI resolves `WAYLAND_DISPLAY` against `XDG_RUNTIME_DIR` to an
+absolute socket path, checks it is a socket, and the supervisor passes that path
+as `WAYLAND_DISPLAY` while still redirecting XDG runtime state. Absolute paths
+also serve containers that bind-mount a host socket. Both modes force native Qt
+Wayland with `DISPLAY` removed; there is no X11 fallback. Display choice is a
+startup property recorded in session metadata; reusing a session with the other
+mode is an error. Attaching to an unmanaged GUI or moving a live process between
+compositors is outside scope.
 
-`screenshot [PATH]` captures that output as a PNG through grim's wlr-screencopy
+`screenshot` and `input` drive only the private compositor and fail explicitly
+in desktop mode, where the human is already at the display. `screenshot [PATH]`
+captures that output as a PNG through grim's wlr-screencopy
 support. It returns the path and dimensions; the default is a unique file under
 session `artifacts/`. Explicit paths are resolved by the CLI and must not exist.
 `input key KEY` sends one XKB key press/release through wtype's virtual keyboard;

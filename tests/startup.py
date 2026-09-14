@@ -89,7 +89,7 @@ def main():
         assert len(supervisors) == 1, supervisors
         supervisor = supervisors[0]
         children = list(map(int, Path(f"/proc/{supervisor}/task/{supervisor}/children").read_text().split()))
-        assert len(children) == 2, children
+        assert len(children) == 3, children  # labwc, wayvnc, GUI launcher
         groups = [os.getpgid(pid) for pid in children]
         return process, owner, groups
 

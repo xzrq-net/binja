@@ -7,15 +7,16 @@ use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 use socket2::SockAddr;
 use std::{
+    ffi::{OsStr, OsString},
     fs::{self, File, OpenOptions},
     os::{
         fd::AsRawFd,
         unix::{
-            fs::{DirBuilderExt, MetadataExt, PermissionsExt, symlink},
+            fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt, symlink},
             process::CommandExt,
         },
     },
-    path::Path,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
         Arc,
@@ -25,7 +26,51 @@ use std::{
     time::{Duration, Instant},
 };
 
-const ENDPOINTS: [&str; 4] = ["rpc.sock", "control.sock", "wayland-0", "wayland-0.lock"];
+const ENDPOINTS: [&str; 6] = [
+    "rpc.sock",
+    "control.sock",
+    "wayland-0",
+    "wayland-0.lock",
+    "vnc.sock",
+    "wayvncctl",
+];
+
+/// Where the GUI's windows go; chosen at start and fixed for the session.
+pub enum Display {
+    /// Private labwc with a wayvnc Unix socket for optional human viewing.
+    Headless,
+    /// The caller's compositor, by absolute socket path.
+    Desktop(PathBuf),
+}
+impl Display {
+    pub fn resolve(mode: &str) -> Result<Self> {
+        if mode == "headless" {
+            return Ok(Self::Headless);
+        }
+        let name = std::env::var_os("WAYLAND_DISPLAY")
+            .filter(|name| !name.is_empty())
+            .context("WAYLAND_DISPLAY is unset; desktop mode needs the caller's Wayland socket")?;
+        let name = PathBuf::from(name);
+        let socket = if name.is_absolute() {
+            name
+        } else {
+            PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR is unset")?)
+                .join(name)
+        };
+        ensure!(
+            socket.metadata().map(|m| m.file_type().is_socket()).unwrap_or(false),
+            "Desktop Wayland socket not found: {}",
+            socket.display()
+        );
+        Ok(Self::Desktop(socket))
+    }
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Headless => "headless",
+            Self::Desktop(_) => "desktop",
+        }
+    }
+}
 fn lock_file(state: &Path, create: bool) -> Result<File> {
     Ok(OpenOptions::new()
         .read(true)
@@ -184,7 +229,7 @@ pub fn status(state: &Path) -> Result<Value> {
     ) {
         Ok(value) => value,
         Err(error) => {
-            let mut value = owner;
+            let mut value = owner.clone();
             value["gui_error"] = json!(format!("{error:#}"));
             value["modal_open"] = Value::Null;
             value["targets"] = Value::Null;
@@ -194,6 +239,10 @@ pub fn status(state: &Path) -> Result<Value> {
     };
     value["running"] = json!(true);
     value["updates"] = updates;
+    // The supervisor, not the GUI, owns the display description.
+    for key in ["display", "vnc_socket", "wayland_socket"] {
+        value[key] = owner[key].clone();
+    }
     let Some(targets) = value["targets"].as_array() else {
         value["file_count"] = Value::Null;
         value["view_count"] = Value::Null;
@@ -214,6 +263,7 @@ pub fn start(
     license: Option<&Path>,
     resources: &Resources,
     no_startup_deadline: bool,
+    display: &Display,
 ) -> Result<Value> {
     prepare(state)?;
     let busy = {
@@ -242,6 +292,9 @@ pub fn start(
             .stderr(log);
         if no_startup_deadline {
             command.arg("--no-startup-deadline");
+        }
+        if let Display::Desktop(socket) = display {
+            command.arg("--wayland-socket").arg(socket);
         }
         detached(&mut command);
         process = Some(command.spawn().context("Start session supervisor")?);
@@ -277,6 +330,12 @@ pub fn start(
                         .next()
                         == config["version"].as_str(),
                     "Running Binary Ninja version differs from this CLI; stop it before upgrading."
+                );
+                ensure!(
+                    value["display"] == display.name(),
+                    "Running session uses the {} display; stop it before switching to {}.",
+                    value["display"].as_str().unwrap_or("unknown"),
+                    display.name()
                 );
                 value["reused"] = json!(busy || exit.is_some());
                 return Ok(value);
@@ -330,11 +389,11 @@ pub fn stop(state: &Path, force: bool) -> Result<Value> {
 // Declared after the flock guard so cleanup runs before the lock is released.
 struct Owned<'a> {
     state: &'a Path,
-    children: Vec<Child>,
+    children: Vec<(&'static str, Child)>,
 }
 impl Drop for Owned<'_> {
     fn drop(&mut self) {
-        for child in self.children.iter_mut().rev() {
+        for (_, child) in self.children.iter_mut().rev() {
             while let Err(error) = terminate(child) {
                 // Keep ownership and endpoints until shutdown can be confirmed.
                 eprintln!("Child shutdown: {error:#}");
@@ -357,6 +416,7 @@ pub fn serve(
     license: &Path,
     resources: &Resources,
     no_startup_deadline: bool,
+    display: &Display,
 ) -> Result<()> {
     unsafe {
         libc::umask(0o077);
@@ -379,7 +439,11 @@ pub fn serve(
     for name in ENDPOINTS {
         unlink(&runtime.join(name))?;
     }
-    let metadata = json!({"generation":generation,"protocol":wire::PROTOCOL,"display":"headless","state_dir":state});
+    let mut metadata = json!({"generation":generation,"protocol":wire::PROTOCOL,"display":display.name(),"state_dir":state});
+    match display {
+        Display::Headless => metadata["vnc_socket"] = json!(runtime.join("vnc.sock")),
+        Display::Desktop(socket) => metadata["wayland_socket"] = json!(socket),
+    }
     atomic_json(&runtime.join("instance.json"), &metadata)?;
     ensure!(
         fs::read_dir(state.join("bn/plugins"))?.next().is_none(),
@@ -428,7 +492,7 @@ pub fn serve(
     let listener = wire::socket()?;
     listener.bind(&SockAddr::unix(runtime.join("control.sock"))?)?;
     listener.listen(8)?;
-    let spawn = |program: &str, args: &[&str], log_name: &str, wayland: bool| -> Result<Child> {
+    let spawn = |program: &str, args: &[&OsStr], log_name: &str, wayland: Option<&OsStr>| -> Result<Child> {
         let mut command = Command::new(program);
         command.args(args);
         for key in [
@@ -468,8 +532,8 @@ pub fn serve(
         command
             .env("BINJA_STATE_DIR", state)
             .env("BINJA_GENERATION", &generation);
-        if wayland {
-            command.env("WAYLAND_DISPLAY", "wayland-0");
+        if let Some(wayland) = wayland {
+            command.env("WAYLAND_DISPLAY", wayland);
         }
         let log = File::create(state.join("logs").join(log_name))?;
         command.stdout(log.try_clone()?).stderr(log);
@@ -492,35 +556,84 @@ pub fn serve(
             .spawn()
             .with_context(|| format!("Start {program}"))?)
     };
-    owned.children.push(spawn(
-        config["labwc"].as_str().context("labwc path")?,
-        &["-C", "/dev/null"],
-        "labwc.log",
-        false,
-    )?);
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while !runtime.join("wayland-0").exists() {
-        ensure!(
-            owned.children[0].try_wait()?.is_none()
-                && Instant::now() < deadline
-                && !stopping.load(Ordering::Relaxed),
-            "Private compositor did not start; inspect labwc.log."
-        );
-        sleep(Duration::from_millis(100));
-    }
-    owned.children.push(spawn(
-        config["runtime"].as_str().context("runtime path")?,
-        &["-n"],
-        "binaryninja.log",
-        true,
-    )?);
+    let tool = |name: &str| -> Result<&str> {
+        config[name].as_str().with_context(|| format!("{name} path"))
+    };
+    // Each helper announces readiness by its socket; wait for it before
+    // starting the next, so a failure names the child that broke.
+    let await_socket = |owned: &mut Owned, name: &str, hint: &str| -> Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !runtime.join(name).exists() {
+            let (child_name, child) = owned.children.last_mut().context("Owned child")?;
+            ensure!(
+                child.try_wait()?.is_none()
+                    && Instant::now() < deadline
+                    && !stopping.load(Ordering::Relaxed),
+                "{hint} did not start; inspect {child_name}.log."
+            );
+            sleep(Duration::from_millis(100));
+        }
+        Ok(())
+    };
+    let gui_socket: OsString = match display {
+        Display::Desktop(socket) => socket.clone().into(),
+        Display::Headless => {
+            owned.children.push((
+                "labwc",
+                spawn(
+                    tool("labwc")?,
+                    &[OsStr::new("-C"), OsStr::new("/dev/null")],
+                    "labwc.log",
+                    None,
+                )?,
+            ));
+            await_socket(&mut owned, "wayland-0", "Private compositor")?;
+            let vnc = runtime.join("vnc.sock");
+            let control = runtime.join("wayvncctl");
+            owned.children.push((
+                "wayvnc",
+                spawn(
+                    tool("wayvnc")?,
+                    &[
+                        OsStr::new("--unix-socket"),
+                        OsStr::new("--render-cursor"),
+                        OsStr::new("--socket"),
+                        control.as_os_str(),
+                        vnc.as_os_str(),
+                    ],
+                    "wayvnc.log",
+                    Some(OsStr::new("wayland-0")),
+                )?,
+            ));
+            await_socket(&mut owned, "vnc.sock", "VNC server")?;
+            "wayland-0".into()
+        }
+    };
+    owned.children.push((
+        "binaryninja",
+        spawn(
+            tool("runtime")?,
+            &[OsStr::new("-n")],
+            "binaryninja.log",
+            Some(&gui_socket),
+        )?,
+    ));
     let deadline = Instant::now() + Duration::from_secs(60);
     let mut ready = false;
     while !stopping.load(Ordering::Relaxed) {
-        for child in &mut owned.children {
-            if child.try_wait()?.is_some() {
+        for index in 0..owned.children.len() {
+            let (name, child) = &mut owned.children[index];
+            if child.try_wait()?.is_none() {
+                continue;
+            }
+            // Losing the viewer costs only viewing; losing anything else ends the session.
+            if *name != "wayvnc" {
                 return Ok(());
             }
+            eprintln!("VNC server exited; the session continues without it.");
+            owned.children.remove(index);
+            metadata["vnc_socket"] = Value::Null;
+            break;
         }
         if !ready {
             ready = wire::rpc(state, "hello", json!({"generation":generation}), false, 0.2).is_ok();
@@ -553,11 +666,22 @@ pub fn serve(
                 request["generation"] == generation && request["protocol"] == wire::PROTOCOL,
                 "Session generation or protocol mismatch."
             );
+            let private = |op: &str| -> Result<()> {
+                ensure!(
+                    matches!(display, Display::Headless),
+                    "{op} drives only the private compositor; this session shows the GUI on the desktop."
+                );
+                Ok(())
+            };
             let mut value = match request["op"].as_str() {
                 Some("screenshot") => {
+                    private("screenshot")?;
                     display::screenshot(state, &config, request["path"].as_str())?
                 }
-                Some("input") => display::input(state, &config, &request)?,
+                Some("input") => {
+                    private("input")?;
+                    display::input(state, &config, &request)?
+                }
                 Some("stop") => {
                     stopping.store(true, Ordering::Relaxed);
                     metadata.clone()

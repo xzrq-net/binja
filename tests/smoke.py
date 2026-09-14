@@ -34,11 +34,33 @@ def receive_wire(connection):
         assert packet[0] == 1
         data.extend(packet[1:])
 
+def vnc_connect(path):
+    """Minimal RFB 3.8 client: handshake with no security, return (socket, width, height)."""
+    connection = socket.socket(socket.AF_UNIX)
+    connection.settimeout(5)
+    connection.connect(str(path))
+    assert connection.recv(12) == b"RFB 003.008\n"
+    connection.sendall(b"RFB 003.008\n")
+    count = connection.recv(1)[0]
+    assert 1 in connection.recv(count), "wayvnc offered no None security type"
+    connection.sendall(b"\x01")
+    assert connection.recv(4) == b"\0\0\0\0"
+    connection.sendall(b"\x01")  # shared session
+    header = connection.recv(24)
+    width, height, name_length = int.from_bytes(header[:2], "big"), int.from_bytes(header[2:4], "big"), int.from_bytes(header[20:], "big")
+    connection.recv(name_length)
+    return connection, width, height
+
+def vnc_key(connection, keysym):
+    for down in (1, 0):
+        connection.sendall(bytes([4, down, 0, 0]) + keysym.to_bytes(4, "big"))
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binja", required=True, type=Path)
     parser.add_argument("--sample", type=Path)
     parser.add_argument("--offline", action="store_true", help="Only help and API lookup; no sample, GUI, or license needed")
+    parser.add_argument("--desktop", action="store_true", help="Also open the GUI on this shell's WAYLAND_DISPLAY for the desktop-mode phase")
     parser.add_argument("--license", type=Path, default=Path.home() / ".binaryninja/license.dat")
     options = parser.parse_args()
     if not options.offline and options.sample is None:
@@ -55,7 +77,7 @@ def main():
             shutil.copy2(options.sample, sample)
         original_hash = hashlib.sha256(sample_a.read_bytes()).hexdigest()
 
-    def cli(*args, code=0, stdin=None, receipts=None):
+    def cli(*args, code=0, stdin=None, receipts=None, env=env):
         completed = subprocess.run([binary, "--json", *map(str, args)], cwd=workspace,
             env=env, input=stdin, text=True, capture_output=True, timeout=90)
         assert completed.returncode == code, (args, completed.returncode, completed.stdout, completed.stderr)
@@ -205,6 +227,9 @@ def main():
         assert all(s["reused"] for s in sessions[-2:])
         session = sessions[0]
         assert session["state_dir"] == str(state)
+        assert session["display"] == "headless"
+        assert session["vnc_socket"] == str(state / "runtime/vnc.sock")
+        assert "stop it before switching" in cli("start", "--display", "desktop", code=1)["error"]
         assert session["version"].split()[0] == symbol["version"]
         assert cli("--state-dir", state, "status")["generation"] == session["generation"]
         assert py("import os; result = os.getcwd()", no_target=True)["result"] == str(workspace)
@@ -297,7 +322,7 @@ on_ui(block)
         assert retrieve(blocked_ui)["status"] == "completed"
 
         gui_pid = py("import os; result = os.getpid()", no_target=True)["result"]
-        modal = py('''from PySide6.QtWidgets import QMessageBox
+        modal_source = '''from PySide6.QtWidgets import QMessageBox
 def modal():
     box = QMessageBox()
     box.setWindowTitle('binja smoke modal')
@@ -305,7 +330,8 @@ def modal():
     box.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
     return box.exec()
 result = on_ui(modal)
-''', no_target=True, no_wait=True)
+'''
+        modal = py(modal_source, no_target=True, no_wait=True)
         deadline = time.monotonic() + 5
         while cli("status")["modal_open"] is not True:
             assert time.monotonic() < deadline, "Modal did not open"
@@ -317,6 +343,12 @@ result = on_ui(modal)
         assert shot["height"] == int.from_bytes(png[20:24], "big") > 0
         assert Path(shot["path"]).parent == state / "artifacts"
         shutil.copy2(shot["path"], workspace / "modal.png")
+        # A VNC viewer sees the same private output the screenshot captured.
+        viewer, vnc_width, vnc_height = vnc_connect(state / "runtime/vnc.sock")
+        assert (vnc_width, vnc_height) == (shot["width"], shot["height"])
+        viewer.sendall(bytes([3, 0]) + (0).to_bytes(4, "big") + vnc_width.to_bytes(2, "big") + vnc_height.to_bytes(2, "big"))
+        assert viewer.recv(4)[0] == 0, "expected a FramebufferUpdate"
+        viewer.close()
         assert "outside" in cli("input", "click", shot["width"], shot["height"], code=1)["error"]
         assert "wtype exited" in cli("input", "key", "NotARealKeySym", code=1)["error"]
         assert cli("input", "key", "Tab")["key"] == "Tab"
@@ -342,6 +374,16 @@ result = on_ui(modal)
         assert retrieve(modal)["result"] == 4194304  # QMessageBox.Cancel
         assert cli("status")["modal_open"] is False
         assert py("result = 6 * 7", no_target=True)["result"] == 42
+        # Remote input through the VNC socket reaches the GUI too.
+        modal = py(modal_source, no_target=True, no_wait=True)
+        deadline = time.monotonic() + 5
+        while cli("status")["modal_open"] is not True:
+            assert time.monotonic() < deadline, "Second modal did not open"
+            time.sleep(.05)
+        viewer, _, _ = vnc_connect(state / "runtime/vnc.sock")
+        vnc_key(viewer, 0xff1b)  # XK_Escape
+        assert retrieve(modal)["result"] == 4194304
+        viewer.close()
 
         assert "No live target" in py("result = bv", code=1)["error"]
         opened_a = cli("open", sample_a)
@@ -1245,7 +1287,8 @@ result = dict(pid=p.pid, group=os.getpgid(p.pid))
         else:
             raise AssertionError(f"Owned group survived stop: {survivor}")
         assert not list((state / "artifacts").iterdir())
-        assert not (state / "runtime/rpc.sock").exists()
+        for endpoint in ("rpc.sock", "wayland-0", "vnc.sock", "wayvncctl"):
+            assert not (state / "runtime" / endpoint).exists(), endpoint
         phase("Supervisor SIGKILL also kills its compositor and GUI launcher")
         cli("start")
         started = True
@@ -1263,7 +1306,7 @@ result = dict(pid=p.pid, group=os.getpgid(p.pid))
         assert len(supervisors) == 1, supervisors
         supervisor = supervisors[0]
         children = list(map(int, Path(f"/proc/{supervisor}/task/{supervisor}/children").read_text().split()))
-        assert len(children) == 2, children
+        assert len(children) == 3, children  # labwc, wayvnc, GUI launcher
         os.kill(supervisor, signal.SIGKILL)
         deadline = time.monotonic() + 10
         while any(Path(f"/proc/{pid}").exists() for pid in children):
@@ -1273,6 +1316,28 @@ result = dict(pid=p.pid, group=os.getpgid(p.pid))
         cli("start")
         cli("stop")
         started = False
+        if options.desktop:
+            phase("Desktop display: same analysis interface, no private compositor controls")
+            assert "WAYLAND_DISPLAY" in cli("start", "--display", "desktop", code=1, env=dict(env, WAYLAND_DISPLAY=""))["error"]
+            desktop = cli("start", "--display", "desktop")
+            started = True
+            assert desktop["display"] == "desktop" and desktop["vnc_socket"] is None
+            assert Path(desktop["wayland_socket"]).is_absolute() and desktop["wayland_socket"].endswith(env["WAYLAND_DISPLAY"])
+            assert not (state / "runtime/wayland-0").exists() and not (state / "runtime/vnc.sock").exists()
+            assert "stop it before switching" in cli("start", code=1)["error"]
+            assert cli("start", "--display", "desktop")["generation"] == desktop["generation"]
+            assert "GUI on the desktop" in subprocess.check_output([binary, "status"], cwd=workspace, env=env, text=True)
+            view = cli("open", database)["result"]["handle"]
+            assert payload(cli("decompile", start, "--target", view))["function"]["start"] == start
+            assert cli("targets")[0]["handle"] == view
+            for arguments in (("screenshot",), ("input", "key", "Escape")):
+                assert "desktop" in cli(*arguments, code=1)["error"]
+            cli("rename", start, "smoke_desktop_name", "--target", view)
+            assert "Unsaved" in cli("stop", code=1)["error"]
+            cli("save", database, "--target", view)
+            cli("stop")
+            started = False
+            assert not (state / "runtime/rpc.sock").exists()
         phase(f"PASS — installed MVP workflow and failure checks; evidence: {workspace}")
     finally:
         if started:
