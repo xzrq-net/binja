@@ -803,3 +803,46 @@ script frame. No existing assertion was weakened. Nix builds pass.
 
 The timeout tests use a connected, nonresponding socket peer; a deliberately hung
 GUI was not tested. The broader adversarial review (2nbgtk) remains separate.
+
+### Independent review findings and dispositions
+
+The independent reviewer reported four findings; all are fixed in this change:
+
+- **Blocker: owned group members survived shutdown after the leader exited.**
+  Termination now sends group SIGTERM, escalates after five seconds to SIGKILL,
+  and waits for killpg(group, 0) to return ESRCH. The supervisor is a child
+  subreaper and reaps adopted descendants as well as its retained child leaders.
+  Shutdown errors retain the lock and defer cleanup instead of releasing
+  ownership. A live smoke script spawns a SIGTERM-resistant subprocess from GUI
+  Python and checks group disappearance before accepting stop; a Rust test
+  separately exercises an already-exited leader.
+- **Supervisor SIGKILL left labwc alive.** Both direct children receive
+  PR_SET_PDEATHSIG/SIGKILL in pre_exec, with a parent-identity recheck covering
+  death between fork and prctl. Spawning stays on the supervisor's main thread,
+  which lives as long as the process. The packaged GUI launcher's existing
+  bubblewrap die-with-parent behavior is retained. Smoke kills the supervisor,
+  checks that both labwc and the GUI launcher disappear, then restarts cleanly.
+- **Competing or late starts failed during initialization.** Both paths now
+  wait for the winning receiver, validate its version, and reuse its generation.
+  Readiness polling uses RPC without taking a transient flock, which could itself
+  defeat a spawning supervisor. Smoke launches eight simultaneous starts plus
+  two arriving after the control socket appears; all must succeed with the same
+  generation, and the late starts must report reuse.
+- **Pruning used submission order.** The worker now sorts terminal records by
+  finished timestamp before pruning. A Python regression submits the eventual
+  newest completion first, follows it with 65 cancelled records, then verifies
+  its result survives while the two oldest cancellations are pruned.
+
+Nix build, five Rust tests, six Python execution tests, the installed live smoke
+suite (external workspace `/tmp/binja-smoke-l_sdbq2i`), and live bridge checks
+passed. Evidence is under `temp/review-fixes/`. Existing smoke assertions remain;
+the sequential startup was replaced with the concurrent case, and shutdown
+coverage was extended. The guide's split flag was repaired and its JSON envelope
+and output paragraphs compressed; the recipes are byte-for-byte unchanged.
+
+This completes the implementation review and MVP milestone (2nbgtk, r2neck).
+Convenience commands, desktop access, richer API lookup, and update notices remain
+open follow-ups. This check did not exercise uninterruptible kernel waits,
+descendants deliberately escaping their owned process group, or the other
+long-duration/stress limitations recorded above. Parent-death signaling covers
+the direct children; it is not a general descendant containment mechanism.

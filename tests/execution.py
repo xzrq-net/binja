@@ -100,6 +100,25 @@ class WaitTests(unittest.TestCase):
         self.assertGreater(cancelled['queue_wait_seconds'], 0)
         self.assertNotIn('client_wait_expired', e.wait(self.rid, 0))
 
+    def test_pruning_keeps_newest_completion_after_later_cancellations(self):
+        e = self.execution
+        e.bridge.state = Path("/unused")
+        newest = e.records[self.rid]
+        # Submitted first, but completes after 65 later requests were cancelled.
+        for i in range(65):
+            rid = f"cancel{i}"
+            e.records[rid] = dict(id=rid, status="cancelled", finished=i)
+        work = iter([newest])
+        e.work = types.SimpleNamespace(get=lambda: next(work))
+        e.execute = lambda record: record.update(status="completed", finished=100, result="latest")
+        with self.assertRaises(StopIteration):
+            e.run()
+        self.assertEqual(newest["result"], "latest")
+        self.assertFalse(newest.get("output_pruned", False))
+        self.assertTrue(e.records["cancel0"]["output_pruned"])
+        self.assertTrue(e.records["cancel1"]["output_pruned"])
+        self.assertFalse(e.records["cancel2"].get("output_pruned", False))
+
     def test_rejection_ring_does_not_admit_or_count_duplicates(self):
         e = self.execution
         e.stopping = False

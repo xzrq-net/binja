@@ -341,8 +341,9 @@ class Execution:
                     record.pop("_bv", None)
                     record.pop("_spec", None)
             with self.lock:
-                finished = [key for key, item in self.records.items()
-                    if item["status"] in TERMINAL and not item.get("output_pruned")]
+                finished = sorted((key for key, item in self.records.items()
+                    if item["status"] in TERMINAL and not item.get("output_pruned")),
+                    key=lambda key: self.records[key]["finished"])
                 for key in finished[:-KEEP_RESULTS]:
                     item = self.records[key]
                     directory = self.bridge.state / "artifacts" / key

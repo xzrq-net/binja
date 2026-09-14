@@ -140,7 +140,14 @@ GUI process rather than forwarding to another instance. The supervisor retains
 child process objects for shutdown and cleanup. Shutdown pins both RPC operations
 to the generation returned by the live supervisor handshake. A held flock is the
 ownership authority; no PID read from discovery metadata is used for termination.
-Owned process groups are terminated before artifacts and endpoints are retired.
+Shutdown sends SIGTERM to owned groups, escalates after five seconds to SIGKILL,
+and confirms group disappearance with killpg(0)/ESRCH before retiring artifacts
+or endpoints and releasing the lock. The supervisor is a child subreaper so it
+can reap orphan descendants even after their group leader exits. Its main thread
+spawns both children with PR_SET_PDEATHSIG/SIGKILL and a parent-identity recheck;
+the packaged GUI launcher also uses bubblewrap's die-with-parent behavior.
+Concurrent starts, including callers arriving during initialization, wait for
+the winning lock owner's receiver and reuse its generation.
 `status` reports no running session with exit 0 when the lock is unheld, without
 creating missing state. If a lock is held but the endpoint cannot answer, it
 reports a fault. Live status counts files by file ID, separately from views.

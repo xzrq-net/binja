@@ -19,3 +19,5 @@ Run bounded adversarial subagent review and usability trials at this checkpoint,
 ## After the MVP
 
 These remain intended work but do not gate this milestone: convenience commands (`zbqnx2`), desktop and visual access (`an2dc3`), richer API lookup (`32k3q7`), and optional update notices (`t7h2fr`). They depend on the initial trials so observations can guide implementation. Static analysis only; specialized loaders, extra Python dependencies, generalized undo, and automatic save cadence remain outside this implementation.
+
+Closed: MVP delivered and live-verified; usability trials, recipes, independent review, and blocker fixes complete. The convenience-command, desktop, API-lookup, and update-notice deeds remain open follow-ups.

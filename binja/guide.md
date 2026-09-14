@@ -93,8 +93,8 @@ interpreter. Variables from earlier requests are unavailable; imports and databa
 edits persist. Stdout/stderr capture includes synchronous `on_ui` callbacks, but
 excludes spawned threads and native Binary Ninja logs.
 
-Target-bound commands wait for completed analysis when they execute. `--allow-
-incomplete` skips this check and is recorded in the result. Analysis on hold
+Target-bound commands wait for completed analysis when they execute.
+`--allow-incomplete` skips this check and is recorded in the result. Analysis on hold
 produces an error; resume it explicitly:
 
 ```sh
@@ -245,26 +245,16 @@ full history in the same order. Rows identify the request kind and script
 filename, target snapshot, phase, timing, pruned inline output, and errors.
 Timings separate queue wait from worker occupancy, including analysis readiness.
 
-`requests --json` returns an object with `requests`, `finished_total`,
-`finished_shown`, `rejected_total`, and `rejections`. Rejected-at-cap attempts
-are separate from accepted records: the total covers the session, while the
-newest 64 events remain in the rejection ring, oldest first. Default human
-listings summarize rejections by count; `--all` includes their retained events.
-Record fields `queue_wait_seconds` and `execution_seconds` separate queue time
-from worker time; `execution_seconds` is null before pickup, including unstarted
-cancellations. `elapsed_seconds` remains time since pickup for started work,
-otherwise since submission; terminal requests stop the clock. The serialized
-export has a 64 MiB limit.
+`requests --json`: `requests`, `finished_total`, `finished_shown`,
+`rejected_total`, `rejections` (newest 64, oldest first; export limit 64 MiB).
+`queue_wait_seconds` measures queueing; `execution_seconds` measures worker
+occupancy (null before pickup). `elapsed_seconds` starts at pickup or submission
+if unstarted; terminal records stop the clock.
 
-Human output keeps a short outcome and the payload; successful open/save
-commands print the resulting path once. `--verbose` appends the complete
-available record, including snapshots, timestamps, and stream previews. `--json`
-puts one full JSON record on stdout. For submissions, stderr carries a flat
-`submitting` event before RPC and an `accepted` event after acknowledgement,
-including for idle admission (`existing: false`) and duplicate recovery
-(`existing: true`). A wait expiry adds `client_wait_expired: true` and
-`recovery_command` to the stdout record; human output names the expiry and
-prints the same command.
+`--verbose` appends the full record; `--json` emits it on stdout. JSON stderr:
+`submitting` before RPC, `accepted` after admission (`existing: false`) or recovery
+(`existing: true`). Wait expiry exits 2 with `client_wait_expired: true` and
+`recovery_command`; human output prints the same recovery command.
 
 Failed or cancelled requests exit 1 when submitted/retrieved. The `cancel`
 command itself exits 0 when cancellation succeeds, and 1 when refused. It can

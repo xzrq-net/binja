@@ -113,32 +113,50 @@ fn detached(command: &mut Command) {
     }
     command.stdin(Stdio::null());
 }
+// ESRCH is the only proof that the owned group is gone.
+fn signal_group(group: i32, signal: i32) -> Result<bool> {
+    if unsafe { libc::killpg(group, signal) } == 0 {
+        return Ok(true);
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(false)
+    } else {
+        Err(error.into())
+    }
+}
 fn terminate(child: &mut Child) -> Result<()> {
-    if child.try_wait()?.is_some() {
-        return Ok(());
-    }
-    let pid = child.id() as i32;
-    if unsafe { libc::killpg(pid, libc::SIGTERM) } < 0 {
-        let error = std::io::Error::last_os_error();
-        if error.raw_os_error() != Some(libc::ESRCH) {
-            return Err(error.into());
-        }
-    }
+    let group = child.id() as i32;
+    signal_group(group, libc::SIGTERM)?;
     let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
+    loop {
+        // Reap the leader through Child first, then any orphan descendants
+        // adopted by this supervisor's subreaper. Zombies keep a group alive.
         if child.try_wait()?.is_some() {
+            loop {
+                let reaped = unsafe { libc::waitpid(-group, std::ptr::null_mut(), libc::WNOHANG) };
+                if reaped >= 0 {
+                    if reaped == 0 {
+                        break;
+                    }
+                    continue;
+                }
+                let error = std::io::Error::last_os_error();
+                match error.raw_os_error() {
+                    Some(libc::EINTR) => continue,
+                    Some(libc::ECHILD) => break,
+                    _ => return Err(error.into()),
+                }
+            }
+        }
+        if !signal_group(group, 0)? {
             return Ok(());
+        }
+        if Instant::now() >= deadline {
+            signal_group(group, libc::SIGKILL)?;
         }
         sleep(Duration::from_millis(50));
     }
-    if unsafe { libc::killpg(pid, libc::SIGKILL) } < 0 {
-        let error = std::io::Error::last_os_error();
-        if error.raw_os_error() != Some(libc::ESRCH) {
-            return Err(error.into());
-        }
-    }
-    child.wait()?;
-    Ok(())
 }
 
 pub fn status(state: &Path) -> Result<Value> {
@@ -169,56 +187,67 @@ pub fn status(state: &Path) -> Result<Value> {
 
 pub fn start(state: &Path, license: Option<&Path>, resources: &Resources) -> Result<Value> {
     prepare(state)?;
-    {
+    let busy = {
         let lock = lock_file(state, true)?;
-        if !try_lock(&lock)? {
-            let mut value = status(state)?;
-            let config = resources.config()?;
-            ensure!(
-                value["version"]
-                    .as_str()
-                    .unwrap_or("")
-                    .split_whitespace()
-                    .next()
-                    == config["version"].as_str(),
-                "Running Binary Ninja version differs from this CLI; stop it before upgrading."
-            );
-            value["reused"] = json!(true);
-            return Ok(value);
-        }
+        !try_lock(&lock)?
+    };
+    let mut process = None;
+    if !busy {
+        let license = absolute(license.unwrap_or(Path::new("~/.binaryninja/license.dat")))?;
+        ensure!(
+            license.is_file(),
+            "License not found: {}. Pass start --license PATH.",
+            license.display()
+        );
+        let log = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(state.join("logs/supervisor.log"))?;
+        let mut command = Command::new(std::env::current_exe()?);
+        command
+            .arg("__supervisor")
+            .arg(state)
+            .arg(&license)
+            .env("BINJA_RESOURCE_DIR", &resources.dir)
+            .stdout(log.try_clone()?)
+            .stderr(log);
+        detached(&mut command);
+        process = Some(command.spawn().context("Start session supervisor")?);
     }
-    let license = absolute(license.unwrap_or(Path::new("~/.binaryninja/license.dat")))?;
-    ensure!(
-        license.is_file(),
-        "License not found: {}. Pass start --license PATH.",
-        license.display()
-    );
-    let log = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(state.join("logs/supervisor.log"))?;
-    let mut command = Command::new(std::env::current_exe()?);
-    command
-        .arg("__supervisor")
-        .arg(state)
-        .arg(&license)
-        .env("BINJA_RESOURCE_DIR", &resources.dir)
-        .stdout(log.try_clone()?)
-        .stderr(log);
-    detached(&mut command);
-    let mut process = command.spawn().context("Start session supervisor")?;
     let deadline = Instant::now() + Duration::from_secs(70);
     let mut last_error = String::from("receiver has not started");
     while Instant::now() < deadline {
-        if let Some(exit) = process.try_wait()? {
-            bail!(
-                "Session startup exited ({exit}); inspect {}/logs.",
-                state.display()
-            );
-        }
+        // A competing supervisor may win the flock after our preliminary check.
+        // Both losers and callers arriving during initialization wait for it.
+        let exit = match process.as_mut() {
+            Some(child) => child.try_wait()?,
+            None => None,
+        };
+        // Do not probe flock while supervisors are competing to acquire it:
+        // a transient status lock could itself make a supervisor lose.
         match wire::rpc(state, "status", json!({}), false, 1.) {
-            Ok(_) => return status(state),
-            Err(error) => last_error = format!("{error:#}"),
+            Ok(_) => {
+                let mut value = status(state)?;
+                ensure!(value["running"] == true, "Session stopped during startup");
+                let config = resources.config()?;
+                ensure!(
+                    value["version"]
+                        .as_str()
+                        .unwrap_or("")
+                        .split_whitespace()
+                        .next()
+                        == config["version"].as_str(),
+                    "Running Binary Ninja version differs from this CLI; stop it before upgrading."
+                );
+                value["reused"] = json!(busy || exit.is_some());
+                return Ok(value);
+            }
+            Err(error) => {
+                last_error = match exit {
+                    Some(exit) => format!("spawned supervisor exited ({exit}); {error:#}"),
+                    None => format!("{error:#}"),
+                };
+            }
         }
         sleep(Duration::from_millis(200));
     }
@@ -259,15 +288,12 @@ struct Owned<'a> {
 }
 impl Drop for Owned<'_> {
     fn drop(&mut self) {
-        let mut stopped = true;
         for child in self.children.iter_mut().rev() {
-            if let Err(error) = terminate(child) {
+            while let Err(error) = terminate(child) {
+                // Keep ownership and endpoints until shutdown can be confirmed.
                 eprintln!("Child shutdown: {error:#}");
-                stopped = false;
+                sleep(Duration::from_secs(1));
             }
-        }
-        if !stopped {
-            return;
         }
         if let Err(error) = retire_artifacts(self.state) {
             eprintln!("Retire artifacts: {error:#}");
@@ -283,6 +309,12 @@ impl Drop for Owned<'_> {
 pub fn serve(state: &Path, license: &Path, resources: &Resources) -> Result<()> {
     unsafe {
         libc::umask(0o077);
+        // Adopt orphaned group members so shutdown can reap them before ESRCH.
+        ensure!(
+            libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) == 0,
+            "Set supervisor child subreaper: {}",
+            std::io::Error::last_os_error()
+        );
     }
     let config = resources.config()?;
     let lock = lock_file(state, false)?;
@@ -391,6 +423,20 @@ pub fn serve(state: &Path, license: &Path, resources: &Resources) -> Result<()> 
         let log = File::create(state.join("logs").join(log_name))?;
         command.stdout(log.try_clone()?).stderr(log);
         detached(&mut command);
+        // Spawn on the long-lived supervisor main thread: PDEATHSIG is tied to
+        // the spawning thread, not merely its process. Check the fork/prctl race.
+        let parent = unsafe { libc::getpid() };
+        unsafe {
+            command.pre_exec(move || {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::getppid() != parent {
+                    libc::_exit(1);
+                }
+                Ok(())
+            });
+        }
         Ok(command
             .spawn()
             .with_context(|| format!("Start {program}"))?)
@@ -474,4 +520,31 @@ pub fn serve(state: &Path, license: &Path, resources: &Resources) -> Result<()> 
         let _ = wire::send(&connection, &reply, wire::MAX_RESPONSE);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shutdown_reaps_resistant_group_after_leader_already_exited() {
+        assert_eq!(
+            unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) },
+            0
+        );
+        let ready = std::env::temp_dir().join(format!("binja-group-{}", uuid::Uuid::new_v4()));
+        let mut command = Command::new("bash");
+        command.args(["-c",
+            "(trap '' TERM; touch \"$1\"; while :; do sleep 1; done) & while [ ! -f \"$1\" ]; do sleep .01; done",
+            "group-test"]).arg(&ready).stdout(Stdio::null()).stderr(Stdio::null());
+        detached(&mut command);
+        let mut child = command.spawn().unwrap();
+        let group = child.id() as i32;
+        // Bash exits while its resistant background child retains the group.
+        child.wait().unwrap();
+        assert!(signal_group(group, 0).unwrap());
+        terminate(&mut child).unwrap();
+        assert!(!signal_group(group, 0).unwrap());
+        fs::remove_file(ready).unwrap();
+    }
 }

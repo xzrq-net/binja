@@ -5,6 +5,7 @@ Usage: python3 tests/smoke.py --binja ./result/bin/binja --sample /path/to/small
 The sample is copied and statically analyzed; it is never executed.
 """
 import argparse
+import signal
 import hashlib
 import json
 import os
@@ -99,8 +100,27 @@ def main():
         assert not state.exists()
 
         phase("Private session ownership and target inference")
-        session = cli("start", "--license", options.license)
+        phase("Concurrent and late starts share initialization")
         started = True
+        starts = [subprocess.Popen([binary, "--json", "start", "--license", str(options.license)],
+            cwd=workspace, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            for _ in range(8)]
+        deadline = time.monotonic() + 20
+        while not (state / "runtime/control.sock").exists():
+            assert time.monotonic() < deadline, "Supervisor did not initialize"
+            time.sleep(.01)
+        assert any(p.poll() is None for p in starts), "Missed initialization window"
+        starts += [subprocess.Popen([binary, "--json", "start"], cwd=workspace, env=env,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE) for _ in range(2)]
+        sessions = []
+        for process in starts:
+            stdout, stderr = process.communicate(timeout=90)
+            assert process.returncode == 0, (stdout, stderr)
+            sessions.append(json.loads(stdout))
+        assert len({s["generation"] for s in sessions}) == 1
+        assert all(s["running"] for s in sessions)
+        assert all(s["reused"] for s in sessions[-2:])
+        session = sessions[0]
         assert session["state_dir"] == str(state)
         assert session["version"].split()[0] == symbol["version"]
         assert cli("--state-dir", state, "status")["generation"] == session["generation"]
@@ -392,6 +412,54 @@ with bridge.execution.lock:
         started = True
         final_view = cli("open", database)["result"]["handle"]
         assert py("result = bv.get_comment_at(bv.entry_point)", final_view)["result"] == "saved after long request history"
+        phase("Force stop empties owned groups, including SIGTERM-resistant descendants")
+        survivor_ready = workspace / "survivor-ready"
+        shell = shutil.which("bash")
+        survivor = py(f"""import subprocess, os
+p = subprocess.Popen([{shell!r}, "-c", "trap '' TERM; echo ready > " + {str(survivor_ready)!r} + "; while :; do sleep 1; done"])
+result = dict(pid=p.pid, group=os.getpgid(p.pid))
+""", final_view)["result"]
+        deadline = time.monotonic() + 5
+        while not survivor_ready.exists():
+            assert time.monotonic() < deadline
+            time.sleep(.01)
+        os.kill(survivor["pid"], signal.SIGTERM)
+        os.kill(survivor["pid"], 0)  # It really resists TERM before shutdown.
+        cli("stop", "--force")
+        started = False
+        try:
+            os.killpg(survivor["group"], 0)
+        except ProcessLookupError:
+            pass
+        else:
+            raise AssertionError(f"Owned group survived stop: {survivor}")
+        assert not list((state / "artifacts").iterdir())
+        assert not (state / "runtime/rpc.sock").exists()
+        phase("Supervisor SIGKILL also kills its compositor and GUI launcher")
+        cli("start")
+        started = True
+        # Test-only discovery through /proc; production never acts on PID metadata.
+        supervisors = []
+        for proc in Path("/proc").iterdir():
+            if not proc.name.isdigit():
+                continue
+            try:
+                argv = (proc / "cmdline").read_bytes().split(b"\0")
+            except (FileNotFoundError, ProcessLookupError, PermissionError):
+                continue
+            if b"__supervisor" in argv and str(state).encode() in argv:
+                supervisors.append(int(proc.name))
+        assert len(supervisors) == 1, supervisors
+        supervisor = supervisors[0]
+        children = list(map(int, Path(f"/proc/{supervisor}/task/{supervisor}/children").read_text().split()))
+        assert len(children) == 2, children
+        os.kill(supervisor, signal.SIGKILL)
+        deadline = time.monotonic() + 10
+        while any(Path(f"/proc/{pid}").exists() for pid in children):
+            assert time.monotonic() < deadline, f"Supervisor children survived: {children}"
+            time.sleep(.05)
+        assert cli("status")["running"] is False
+        cli("start")
         cli("stop")
         started = False
         phase(f"PASS — installed MVP workflow and failure checks; evidence: {workspace}")
