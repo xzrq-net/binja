@@ -1333,3 +1333,26 @@ already-queued expired handles, missing and ambiguous selectors, relative-path
 and clean BNDB close, analysis on hold, human output, consistent target/status
 counts, and clean stop. Probe scripts and transcripts are under
 `temp/close-probe/`.
+
+## 2026-09-13 — Optional GUI startup deadline
+
+Added `start --no-startup-deadline` for new sessions. It bypasses the supervisor's
+60-second GUI handshake deadline while preserving readiness polling, compositor
+controls, and child-exit cleanup. The CLI still waits at most 70 seconds. Startup
+exit errors now name both `logs/binaryninja.log` and `logs/supervisor.log`; the
+packaged guide describes the flag and recovery sequence.
+
+`tests/startup.py` copies the installed plugin and inserts a Qt modal before its
+receiver starts. Without the flag, the CLI failed after 65.4 seconds, including
+its exit grace; both child groups and all four session endpoints were gone.
+With the flag, the CLI timed out at 70.0 seconds while status still reported
+`running: true`, `ready: false`, and unknown GUI state. The captured modal matched
+the earlier screenshot byte for byte. Compositor Return dismissed it, the same
+generation became usable, and Python returned 42. Separate pre-readiness checks
+verified force-stop, GUI exit, and compositor exit, including group and endpoint
+cleanup. Screenshots and receipts: `/tmp/binja-startup-i1n5m37w`.
+
+`nix build`, all seven Rust tests, and the full installed smoke suite passed
+(`/tmp/binja-smoke-4wkfy379`). Transcripts are under `temp/startup-deadline/`.
+The modal is a deterministic test fixture; no real license or update dialog was
+triggered.

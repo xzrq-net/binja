@@ -166,7 +166,8 @@ def main():
         assert failed_start.returncode == 1, (failed_start.stdout, failed_start.stderr)
         error = json.loads(failed_start.stdout)["error"]
         assert "Session startup exited (exit status: 1)" in error, error
-        assert str(state / "logs") in error and "Startup wait timed out" not in error
+        assert str(state / "logs/binaryninja.log") in error
+        assert str(state / "logs/supervisor.log") in error and "Startup wait timed out" not in error
         assert "Managed plugin directory must be empty" in (state / "logs/supervisor.log").read_text()
         assert latency < 8, latency
         phase(f"Failed supervisor latency: {latency:.3f}s")

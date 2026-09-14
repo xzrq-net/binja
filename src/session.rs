@@ -209,7 +209,12 @@ pub fn status(state: &Path) -> Result<Value> {
     Ok(value)
 }
 
-pub fn start(state: &Path, license: Option<&Path>, resources: &Resources) -> Result<Value> {
+pub fn start(
+    state: &Path,
+    license: Option<&Path>,
+    resources: &Resources,
+    no_startup_deadline: bool,
+) -> Result<Value> {
     prepare(state)?;
     let busy = {
         let lock = lock_file(state, true)?;
@@ -235,6 +240,9 @@ pub fn start(state: &Path, license: Option<&Path>, resources: &Resources) -> Res
             .env("BINJA_RESOURCE_DIR", &resources.dir)
             .stdout(log.try_clone()?)
             .stderr(log);
+        if no_startup_deadline {
+            command.arg("--no-startup-deadline");
+        }
         detached(&mut command);
         process = Some(command.spawn().context("Start session supervisor")?);
     }
@@ -284,7 +292,8 @@ pub fn start(state: &Path, license: Option<&Path>, resources: &Resources) -> Res
     }
     if let Some(exit) = exited {
         bail!(
-            "Session startup exited ({exit}); inspect {}/logs.",
+            "Session startup exited ({exit}); inspect {}/logs/binaryninja.log and {}/logs/supervisor.log.",
+            state.display(),
             state.display()
         );
     }
@@ -343,7 +352,12 @@ impl Drop for Owned<'_> {
     }
 }
 
-pub fn serve(state: &Path, license: &Path, resources: &Resources) -> Result<()> {
+pub fn serve(
+    state: &Path,
+    license: &Path,
+    resources: &Resources,
+    no_startup_deadline: bool,
+) -> Result<()> {
     unsafe {
         libc::umask(0o077);
         // Adopt orphaned group members so shutdown can reap them before ESRCH.
@@ -511,7 +525,7 @@ pub fn serve(state: &Path, license: &Path, resources: &Resources) -> Result<()> 
         if !ready {
             ready = wire::rpc(state, "hello", json!({"generation":generation}), false, 0.2).is_ok();
             ensure!(
-                ready || Instant::now() < deadline,
+                ready || no_startup_deadline || Instant::now() < deadline,
                 "GUI receiver did not become ready; inspect binaryninja.log."
             );
         }

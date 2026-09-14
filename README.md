@@ -59,12 +59,15 @@ Build and run the live checks from the checkout:
 nix build
 python3 tests/smoke.py --binja ./result/bin/binja --sample /path/to/small/ELF
 python3 tests/bridge.py --package "$(readlink -f result)" --sample /path/to/small/ELF
+python3 tests/startup.py --binja ./result/bin/binja
 ```
 
 The checks require a Personal license (`smoke.py --offline` runs only the help
 and API lookup phases and needs neither license nor sample). They copy the sample into a temporary
 workspace, analyze it without executing it, and verify targeting, request recovery,
 save/reopen, and shutdown behavior.
+`startup.py` takes about three minutes to check startup-modal deadlines, recovery
+through compositor input, and cleanup when children exit before readiness.
 
 `nix develop` provides cargo, rustc, Python for checks, and the packaged CLI.
 Dependencies are locked in `Cargo.lock`; Nix consumes it directly. To run the

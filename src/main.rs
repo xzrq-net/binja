@@ -100,6 +100,11 @@ enum Commands {
     Start {
         #[arg(long)]
         license: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Keep a new session alive past the 60-second GUI readiness deadline"
+        )]
+        no_startup_deadline: bool,
         #[arg(long, default_value="headless", value_parser=["headless"])]
         display: String,
     },
@@ -340,7 +345,12 @@ enum Commands {
     #[command(about = "Cancel queued work or a readiness wait; successful cancellation exits 0")]
     Cancel { id: String },
     #[command(name = "__supervisor", hide = true)]
-    Supervisor { state: PathBuf, license: PathBuf },
+    Supervisor {
+        state: PathBuf,
+        license: PathBuf,
+        #[arg(long)]
+        no_startup_deadline: bool,
+    },
 }
 #[derive(Subcommand)]
 enum Input {
@@ -427,8 +437,13 @@ fn command_script(resources: &Resources, kind: &str, args: Value) -> Result<Valu
 
 fn run(cli: &Cli) -> Result<i32> {
     let resources = Resources::locate()?;
-    if let Commands::Supervisor { state, license } = &cli.command {
-        session::serve(state, license, &resources)?;
+    if let Commands::Supervisor {
+        state,
+        license,
+        no_startup_deadline,
+    } = &cli.command
+    {
+        session::serve(state, license, &resources, *no_startup_deadline)?;
         return Ok(0);
     }
     if matches!(cli.command, Commands::Skill) {
@@ -456,8 +471,12 @@ fn run(cli: &Cli) -> Result<i32> {
     }
     let state = state_path(&cli.state_dir)?;
     let (mut value, command, no_wait) = match &cli.command {
-        Commands::Start { license, .. } => (
-            session::start(&state, license.as_deref(), &resources)?,
+        Commands::Start {
+            license,
+            no_startup_deadline,
+            ..
+        } => (
+            session::start(&state, license.as_deref(), &resources, *no_startup_deadline)?,
             "start",
             false,
         ),

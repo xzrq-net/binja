@@ -53,6 +53,13 @@ Capture and input use the private compositor, even when GUI RPC cannot answer.
 makes file and view counts unknown. Input reports sent events; check the screenshot or
 status for their effect. Screenshots default to session `artifacts/`, which is
 cleared on stop/restart; pass a new path outside session state to keep one.
+If a startup dialog prevents the plugin from loading, the supervisor stops the
+session after 60 seconds. Inspect `logs/binaryninja.log` and `logs/supervisor.log`,
+then restart with `start --no-startup-deadline` to keep it alive for capture and
+input. The CLI still stops waiting after 70 seconds; `status --json` reports
+`ready: false` until the receiver loads. Dismiss the dialog and check status, or
+use `stop --force`. The flag applies only when starting a new session; child
+exits still trigger cleanup.
 
 ## Targets
 

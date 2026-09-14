@@ -162,6 +162,11 @@ spawns both children with PR_SET_PDEATHSIG/SIGKILL and a parent-identity recheck
 the packaged GUI launcher also uses bubblewrap's die-with-parent behavior.
 Concurrent starts, including callers arriving during initialization, wait for
 the winning lock owner's receiver and reuse its generation.
+The supervisor requires a GUI receiver handshake within 60 seconds unless the
+session was launched with `start --no-startup-deadline`. With that flag, it keeps
+polling readiness and serving compositor controls until the receiver loads, a
+child exits, or shutdown is requested. The CLI's 70-second startup wait remains
+bounded; its timeout leaves the session alive with supervisor `ready: false`.
 `status` reports no running session with exit 0 when the lock is unheld, without
 creating missing state. If a lock is held but the endpoint cannot answer, it
 reports a fault. Live status counts files by file ID, separately from views.
