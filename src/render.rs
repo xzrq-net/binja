@@ -341,20 +341,43 @@ pub fn render(
                 if v["running"] == false {
                     println!("No running session  {}", text(v, "state_dir"));
                 } else {
-                    let rows = v["requests"].as_array().unwrap();
+                    let rows = v["requests"].as_array().map(Vec::as_slice).unwrap_or(&[]);
                     let queued = rows.iter().filter(|r| r["status"] == "queued").count();
-                    println!(
-                        "Running  {}  {} file{} ({} view{})  {} running, {queued} queued",
-                        text(v, "state_dir"),
-                        v["file_count"],
-                        if v["file_count"] == 1 { "" } else { "s" },
-                        v["view_count"],
-                        if v["view_count"] == 1 { "" } else { "s" },
-                        rows.len() - queued
-                    );
+                    if v["file_count"].is_null() {
+                        println!("Running  {}  files and views unknown", text(v, "state_dir"));
+                    } else {
+                        println!(
+                            "Running  {}  {} file{} ({} view{})  {} running, {queued} queued",
+                            text(v, "state_dir"),
+                            v["file_count"],
+                            if v["file_count"] == 1 { "" } else { "s" },
+                            v["view_count"],
+                            if v["view_count"] == 1 { "" } else { "s" },
+                            rows.len() - queued
+                        );
+                    }
+                    match v["modal_open"].as_bool() {
+                        Some(true) => println!("Modal: open; see binja screenshot and binja input"),
+                        Some(false) => (),
+                        None => println!("Modal: unknown"),
+                    }
+                    if !text(v, "gui_error").is_empty() {
+                        println!("GUI status unavailable: {}", text(v, "gui_error"));
+                    }
+                    if v["requests"].is_null() {
+                        println!("Requests: unknown");
+                    }
                     for r in rows {
                         println!("  {} {}", text(r, "id"), text(r, "status"));
                     }
+                }
+            }
+            "screenshot" => println!("{}", text(v, "path")),
+            "input" => {
+                if v["action"] == "key" {
+                    println!("Sent key {}", text(v, "key"));
+                } else {
+                    println!("Sent left click at {}, {}", v["x"], v["y"]);
                 }
             }
             "stop" => println!(

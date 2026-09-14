@@ -1,4 +1,5 @@
 """Resident receiver loaded through the managed startup.py."""
+from concurrent.futures import Future, TimeoutError
 import math
 import os
 from pathlib import Path
@@ -7,6 +8,7 @@ import threading
 import traceback
 
 import binaryninja as bn
+from PySide6.QtWidgets import QApplication
 
 from .common import Error, PROTOCOL, build_config, receive, send
 from .targets import Targets, on_ui
@@ -19,6 +21,34 @@ class Bridge:
         self.generation = os.environ["BINJA_GENERATION"]
         self.targets = Targets(self.generation)
         self.execution = Execution(self, bn)
+        self.ui_probe = None
+        self.ui_probe_lock = threading.Lock()
+
+    def gui_status(self):
+        # Reuse one pending probe while the UI is stuck; polling must not
+        # accumulate waiting threads or main-thread callbacks.
+        with self.ui_probe_lock:
+            if self.ui_probe is None or self.ui_probe.done():
+                probe = self.ui_probe = Future()
+
+                def inspect():
+                    try:
+                        probe.set_result(dict(targets=self.targets.refresh(),
+                            modal_open=QApplication.activeModalWidget() is not None))
+                    except Exception as exc:
+                        probe.set_exception(exc)
+
+                try:
+                    bn.execute_on_main_thread(inspect)
+                except Exception as exc:
+                    probe.set_exception(exc)
+            probe = self.ui_probe
+        try:
+            return probe.result(timeout=.25)
+        except TimeoutError:
+            return dict(targets=None, modal_open=None, gui_error="UI status probe timed out")
+        except Exception as exc:
+            return dict(targets=None, modal_open=None, gui_error=f"UI status probe: {exc}")
 
     def dispatch(self, request):
         if request.get("protocol") != PROTOCOL:
@@ -31,7 +61,7 @@ class Bridge:
             result = dict(generation=self.generation, version=bn.core_version(), display="headless",
                 state_dir=str(self.state), docs=config["vendor"] + "/api-docs", python=__import__("sys").version)
             if operation == "status":
-                result["targets"] = on_ui(self.targets.refresh)
+                result.update(self.gui_status())
                 result["requests"] = [{k: r[k] for k in ("id", "status", "target_snapshot")} for r in self.execution.list()["requests"] if r["status"] not in ("completed", "failed", "cancelled")]
             return result
         if operation == "targets":

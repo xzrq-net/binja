@@ -982,3 +982,45 @@ was on x86-64; other architecture decoders were not exercised.
 Updated the packaged guide, README and design contract, retiring the addressed
 HLIL/disassembly Python recipe. Saved scratch databases and stopped the checkout
 GUI cleanly.
+
+## 2026-09-13 — Private display recovery (scpm34)
+
+Verified packaged labwc 0.20.0 with `WLR_BACKENDS=headless`, one output, and
+`WLR_RENDERER=pixman` before implementing the interface. It advertised
+wlr-screencopy v3, virtual keyboard v1, and virtual pointer v2. Grim captured a
+1280×720 PNG; wtype and wlrctl connected successfully. Protocol evidence and
+probe scripts are under `temp/gui-probe/`.
+
+Added `screenshot [PATH]`, `input key KEY`, and `input click X Y` through the
+generation-checked supervisor endpoint. Helpers use only its private compositor
+socket and run with bounded lifetimes. Screenshots default to session artifacts;
+explicit destinations refuse overwrite. Click coordinates use the scale-1 PNG.
+The guide and Display modes reference document the recovery interface.
+
+Live verification caught a keyboard delivery bug that protocol success alone
+missed: Qt received wtype's first press as an already-held key in
+`wl_keyboard.enter`, followed only by its release. An empty modifier event
+before the requested press establishes the keyboard first. Escape then closed
+a QMessageBox on a fresh session. A separate screenshot-guided click at
+(637, 389) closed its OK button and returned 1024; ordinary Python subsequently
+returned 42. No widget coordinates were queried. Screenshots `modal.png` and
+`after-click.png`, plus `click-result.json`, retain that manual evidence.
+
+With every GUI thread stopped by SIGSTOP, screenshot and input still returned;
+status reported unknown modal, target, and request state in 1.011 seconds.
+After SIGCONT, Escape closed the modal (QMessageBox.Cancel, 4194304), and Python
+again returned 42. Evidence: `frozen-fixed.png` and `frozen-result.json` in the
+same probe directory. Status now shares one asynchronous UI probe across polls,
+waits at most 250 ms for it, and falls back to supervisor information if GUI RPC
+cannot answer within one second.
+
+The full installed smoke suite passed from `/tmp/binja-smoke-msnpgb4k`, including
+the deterministic modal/capture/Escape recovery sequence, an explicitly blocked
+UI thread, SIGSTOP/SIGCONT, invalid input, and screenshot overwrite refusal.
+Transcript: `temp/gui-probe/smoke.txt`. Two GUI-probe unit tests, six execution
+tests, six Rust tests, and `nix build` passed. All probe sessions were stopped.
+
+Filed 685369 for the existing 60-second GUI startup-readiness deadline: it kills
+a session whose plugin never starts, limiting the time available to inspect
+startup dialogs. The present commands work while its compositor is alive;
+changing that lifecycle policy is separate work.

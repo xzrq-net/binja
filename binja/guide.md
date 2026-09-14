@@ -38,6 +38,15 @@ this session (`null` means unknown). `stop` refuses pending work and unsaved cha
 After a restart, use `open ./analysis.bndb` to continue saved analysis. Open tabs,
 unsaved edits, request results, and Python state are not restored.
 
+For a stuck GUI, run `screenshot [PATH]`, inspect the PNG, then use
+`input key Escape` (also `Return`, `Tab`, or another XKB key name) or
+`input click X Y` for a left click at a screenshot pixel from the top left.
+Capture and input use the private compositor, even when GUI RPC cannot answer.
+`status` says when a modal is open or the GUI state is unknown; a stuck UI also
+makes file and view counts unknown. Input reports sent events; check the screenshot or
+status for their effect. Screenshots default to session `artifacts/`, which is
+cleared on stop/restart; pass a new path outside session state to keep one.
+
 ## Targets
 
 With one eligible view, commands infer the target. With multiple files, use

@@ -169,6 +169,25 @@ rendering. Qt selects native Wayland. Desktop Wayland and optional wayvnc access
 are planned in deeds; display choice remains a startup property. Attaching to an
 unmanaged GUI or moving a live process between compositors is outside scope.
 
+`screenshot [PATH]` captures that output as a PNG through grim's wlr-screencopy
+support. It returns the path and dimensions; the default is a unique file under
+session `artifacts/`. Explicit paths are resolved by the CLI and must not exist.
+`input key KEY` sends one XKB key press/release through wtype's virtual keyboard;
+`input click X Y` sends a left click through wlrctl's virtual pointer. Coordinates
+are scale-1 screenshot pixels from the top left of the single headless output.
+The pointer is clamped to that corner before relative movement to the requested
+pixel; bounds come from a capture, with no window or pointer enumeration.
+
+Both commands use the generation-checked supervisor endpoint and connect helpers
+only to the private compositor socket. They need no GUI RPC or `on_ui` callback.
+Helpers time out after two seconds and are killed after one further second;
+input success reports sent events, not application handling. The GUI's `status`
+probe samples targets and `QApplication.activeModalWidget()` asynchronously,
+waiting at most 250 ms and sharing one pending probe across polls. A timeout
+reports `modal_open`, targets, and file/view counts as null with `gui_error`.
+If GUI RPC itself cannot answer within one second, status reports the live
+supervisor with those fields and requests unknown. Human output says `unknown`.
+
 ## Targets and readiness
 
 Targets expose a generation-scoped handle, path, view type, focus, analysis state,

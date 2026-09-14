@@ -29,3 +29,5 @@ where the agent gets stuck.
 
 Verify by provoking a modal (an `on_ui` call that opens a message box) and
 clearing it from the CLI.
+
+Closed: screenshot [PATH], input key KEY, and input click X Y through the private compositor (grim, wtype, wlrctl via the supervisor endpoint); status reports modal open/unknown with a bounded probe. Verified with a real QMessageBox and a SIGSTOPped GUI.

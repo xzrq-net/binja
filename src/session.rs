@@ -1,4 +1,5 @@
 use crate::{
+    display,
     resources::{Resources, absolute},
     wire,
 };
@@ -172,9 +173,30 @@ pub fn status(state: &Path) -> Result<Value> {
     if try_lock(&lock)? {
         return Ok(json!({"running":false,"state_dir":state}));
     }
-    let mut value = wire::rpc(state, "status", json!({}), false, 5.)?;
+    let owner = wire::rpc(state, "status", json!({}), true, 5.)?;
+    let mut value = match wire::rpc(
+        state,
+        "status",
+        json!({"generation":owner["generation"]}),
+        false,
+        1.,
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            let mut value = owner;
+            value["gui_error"] = json!(format!("{error:#}"));
+            value["modal_open"] = Value::Null;
+            value["targets"] = Value::Null;
+            value["requests"] = Value::Null;
+            value
+        }
+    };
     value["running"] = json!(true);
-    let targets = value["targets"].as_array().context("Status targets")?;
+    let Some(targets) = value["targets"].as_array() else {
+        value["file_count"] = Value::Null;
+        value["view_count"] = Value::Null;
+        return Ok(value);
+    };
     let mut files = std::collections::HashSet::new();
     for target in targets {
         files.insert(target["file_id"].to_string());
@@ -515,12 +537,19 @@ pub fn serve(state: &Path, license: &Path, resources: &Resources) -> Result<()> 
                 request["generation"] == generation && request["protocol"] == wire::PROTOCOL,
                 "Session generation or protocol mismatch."
             );
-            match request["op"].as_str() {
-                Some("stop") => stopping.store(true, Ordering::Relaxed),
-                Some("status") => (),
+            let mut value = match request["op"].as_str() {
+                Some("screenshot") => {
+                    display::screenshot(state, &config, request["path"].as_str())?
+                }
+                Some("input") => display::input(state, &config, &request)?,
+                Some("stop") => {
+                    stopping.store(true, Ordering::Relaxed);
+                    metadata.clone()
+                }
+                Some("status") => metadata.clone(),
                 _ => bail!("Unknown supervisor operation."),
-            }
-            let mut value = metadata.clone();
+            };
+            value["generation"] = json!(generation);
             value["ready"] = json!(ready);
             Ok(value)
         })();

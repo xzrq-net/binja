@@ -45,7 +45,7 @@ in rustPlatform.buildRustPackage {
     cp -r binja $out/lib/
     cp -r licenses $out/share/binja/
     cat > $out/lib/binja/build.json <<EOF
-    {"version":"${version}","vendor":"${vendor}","runtime":"${runtime}/bin/binja-runtime","labwc":"${pkgs.labwc}/bin/labwc"}
+    {"version":"${version}","vendor":"${vendor}","runtime":"${runtime}/bin/binja-runtime","labwc":"${pkgs.labwc}/bin/labwc","grim":"${pkgs.grim}/bin/grim","wtype":"${pkgs.wtype}/bin/wtype","wlrctl":"${pkgs.wlrctl}/bin/wlrctl","timeout":"${pkgs.coreutils}/bin/timeout"}
     EOF
     PYTHONPATH=$out/lib ${python3}/bin/python3 -P -m binja.api \
       ${vendor}/python/binaryninja $out/lib/binja/api-index.json

@@ -1,4 +1,5 @@
 mod api;
+mod display;
 mod render;
 mod resources;
 mod session;
@@ -103,6 +104,16 @@ enum Commands {
     },
     #[command(about = "Show the session, file/view counts, and pending work")]
     Status,
+    #[command(about = "Capture the private display to a PNG (works without GUI RPC)")]
+    Screenshot {
+        #[arg(help = "New PNG path; defaults to the session's artifacts directory")]
+        path: Option<PathBuf>,
+    },
+    #[command(about = "Send a key or click to unstick the private GUI")]
+    Input {
+        #[command(subcommand)]
+        command: Input,
+    },
     #[command(about = "List explicit view handles and paths")]
     Targets,
     #[command(about = "Stop the owned session")]
@@ -193,6 +204,13 @@ enum Commands {
     Cancel { id: String },
     #[command(name = "__supervisor", hide = true)]
     Supervisor { state: PathBuf, license: PathBuf },
+}
+#[derive(Subcommand)]
+enum Input {
+    #[command(about = "Press and release an XKB key name, such as Escape, Return, or Tab")]
+    Key { key: String },
+    #[command(about = "Left-click a screenshot pixel, measured from the top left")]
+    Click { x: u32, y: u32 },
 }
 #[derive(Subcommand)]
 enum Api {
@@ -304,6 +322,25 @@ fn run(cli: &Cli) -> Result<i32> {
         ),
         Commands::Stop { force } => (session::stop(&state, *force)?, "stop", false),
         Commands::Status => (session::status(&state)?, "status", false),
+        Commands::Screenshot { path } => {
+            let path = path.as_ref().map(absolute).transpose()?;
+            (
+                wire::rpc(&state, "screenshot", json!({"path":path}), true, 15.)?,
+                "screenshot",
+                false,
+            )
+        }
+        Commands::Input { command } => {
+            let input = match command {
+                Input::Key { key } => json!({"key":key}),
+                Input::Click { x, y } => json!({"x":x,"y":y}),
+            };
+            (
+                wire::rpc(&state, "input", input, true, 15.)?,
+                "input",
+                false,
+            )
+        }
         Commands::Targets => (
             wire::rpc(&state, "targets", json!({}), false, 5.)?,
             "targets",

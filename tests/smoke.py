@@ -201,6 +201,80 @@ def main():
         assert py("import os; result = os.getcwd()", no_target=True)["result"] == str(workspace)
         assert cli("start")["generation"] == session["generation"]
         assert cli("targets") == []
+
+        phase("Stuck UI status, compositor capture, and modal dismissal")
+        ui_blocked, ui_release = workspace / "ui-blocked", workspace / "ui-release"
+        blocked_ui = py('''import time
+from pathlib import Path
+def block():
+    Path(args['ready']).touch()
+    deadline = time.monotonic() + 15
+    while not Path(args['release']).exists() and time.monotonic() < deadline:
+        time.sleep(.05)
+on_ui(block)
+''', no_target=True, no_wait=True, args=json.dumps({"ready": str(ui_blocked), "release": str(ui_release)}))
+        try:
+            deadline = time.monotonic() + 5
+            while not ui_blocked.exists():
+                assert time.monotonic() < deadline, "UI did not enter the blocking callback"
+                time.sleep(.05)
+            before = time.monotonic()
+            unknown = cli("status")
+            assert time.monotonic() - before < 3
+            assert unknown["modal_open"] is None and unknown["targets"] is None
+            assert unknown["file_count"] is None and unknown["view_count"] is None
+            assert any(r["id"] == blocked_ui["id"] for r in unknown["requests"])
+            assert "Modal: unknown" in subprocess.check_output([binary, "status"], cwd=workspace, env=env, text=True, timeout=3)
+        finally:
+            ui_release.touch()
+        assert retrieve(blocked_ui)["status"] == "completed"
+
+        gui_pid = py("import os; result = os.getpid()", no_target=True)["result"]
+        modal = py('''from PySide6.QtWidgets import QMessageBox
+def modal():
+    box = QMessageBox()
+    box.setWindowTitle('binja smoke modal')
+    box.setText('Dismiss this modal using the CLI.')
+    box.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
+    return box.exec()
+result = on_ui(modal)
+''', no_target=True, no_wait=True)
+        deadline = time.monotonic() + 5
+        while cli("status")["modal_open"] is not True:
+            assert time.monotonic() < deadline, "Modal did not open"
+            time.sleep(.05)
+        shot = cli("screenshot")
+        png = Path(shot["path"]).read_bytes()
+        assert png[:8] == b"\x89PNG\r\n\x1a\n" and png[12:16] == b"IHDR"
+        assert shot["width"] == int.from_bytes(png[16:20], "big") > 0
+        assert shot["height"] == int.from_bytes(png[20:24], "big") > 0
+        assert Path(shot["path"]).parent == state / "artifacts"
+        shutil.copy2(shot["path"], workspace / "modal.png")
+        assert "outside" in cli("input", "click", shot["width"], shot["height"], code=1)["error"]
+        assert "wtype exited" in cli("input", "key", "NotARealKeySym", code=1)["error"]
+        assert cli("input", "key", "Tab")["key"] == "Tab"
+        # Stop every GUI thread: these commands must depend only on the compositor.
+        os.kill(gui_pid, signal.SIGSTOP)
+        try:
+            before = time.monotonic()
+            frozen = cli("status")
+            assert time.monotonic() - before < 3
+            assert frozen["running"] and frozen["modal_open"] is None and frozen["requests"] is None
+            frozen_path = workspace / "frozen modal.png"
+            screenshot = subprocess.check_output([binary, "screenshot", frozen_path.name],
+                cwd=workspace, env=env, text=True, timeout=5).strip()
+            assert screenshot == str(frozen_path)
+            assert frozen_path.read_bytes()[:8] == png[:8]
+            previous = frozen_path.read_bytes()
+            assert "Create screenshot" in cli("screenshot", frozen_path, code=1)["error"]
+            assert frozen_path.read_bytes() == previous
+            assert cli("input", "key", "Escape")["key"] == "Escape"
+        finally:
+            os.kill(gui_pid, signal.SIGCONT)
+        assert retrieve(modal)["result"] == 4194304  # QMessageBox.Cancel
+        assert cli("status")["modal_open"] is False
+        assert py("result = 6 * 7", no_target=True)["result"] == 42
+
         assert "No live target" in py("result = bv", code=1)["error"]
         opened_a = cli("open", sample_a)
         assert opened_a["target_snapshot_stage"] == "open"
