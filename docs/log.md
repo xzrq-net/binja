@@ -906,3 +906,79 @@ property accessors in the pinned distribution. No GUI or license was used.
 The guide's API lookup paragraph now addresses the Function guesses without
 duplicating API documentation. Runtime lookup stays deferred until a concrete
 failure needs it.
+
+## 2026-09-13 — Typed code inspection and GUI verification
+
+Implemented 5bkxzv's `decompile`, `il` and `disasm` after design approval. They
+submit packaged Python scripts with distinct kinds through the existing worker.
+The final design uses no new envelope fields or structured error taxonomy:
+Python prints the header/listing/continuation and returns lean structured rows;
+Rust only suppresses duplicate result printing for these kinds. Function and
+symbol ambiguity fails with inline candidates. MLIL is the default IL view.
+Pagination rerenders the live function, without cursors. Linear disassembly uses
+the view architecture, exclusive ends and explicit decode stopping reasons.
+
+Started Binary Ninja 6.0.10601 Personal successfully in the checkout's `.binja`.
+Opened `temp/samples/a/sample` and copied the requested bash 5.3p9 executable
+from `/nix/store/v8llyqw71lygr2llhmcc8ya5bdlzq45v-bash-5.3p9/bin/bash` into
+`temp/typed/bash` before opening it. Neither executable was run. Compared the
+CLI with captured GUI linear views for sample's `main` at `0x40122e` and bash's
+`can_optimize_cat_file` at `0x496890`: Pseudo C, HLIL, MLIL, LLIL and disassembly.
+Screenshots and corresponding CLI records are `temp/typed/{sample,bash}-*.{png,json}`.
+
+The first comparison exposed that a bare `DisassemblySettings()` omits casts
+shown by the GUI. Switched to `default_linear_settings()`, disabling the native
+address/opcode columns and collapse indicators and enabling WaitForIL. Pseudo C
+now retains, for example, sample's `*(uint64_t*)((char*)fsbase + 0x28)` and
+`(uint8_t)var_198 = 3;`. Native code, branch targets, IL indexes and instruction
+bytes matched the inspected GUI content. GUI-only call-argument inlays such as
+`dest:` are not native text and are omitted. Native HLIL/Pseudo C line anchors
+are retained: the synthetic `fsbase` declaration has API anchor `0x401242`, while
+the Pseudo C GUI gutter associates it with `0x40122e`. This is why addresses are
+labeled anchors. The standalone renderer always expands the function body.
+
+Bash had 2,046 functions. Chose `can_optimize_cat_file` as the median by
+`total_bytes` (83 bytes), and `read_token.constprop.0` at `0x42b8c0` as the largest
+(17,199 bytes). Measured UTF-8 stdout and the JSON encoder's actual result size,
+including header/footer and result metadata, for every page of all eight
+representations. The default is **64 rows**: all those pages stayed below the
+16,384-byte inline threshold in both streams. At 100 rows, largest-function SSA
+pages reached 17,818/21,570 bytes (stdout/result); at 80 rows, 16,687/19,705 bytes.
+
+Largest-function measurements at 64 rows (bytes; maxima cover every page):
+
+| Representation | Total rows | First stdout/result | Maximum stdout/result |
+| --- | ---: | ---: | ---: |
+| Pseudo C | 4,410 | 2,682 / 4,521 | 5,959 / 7,983 |
+| HLIL | 3,569 | 3,689 / 5,998 | 6,511 / 9,389 |
+| HLIL SSA | 18,629 | 5,059 / 7,337 | 7,472 / 9,878 |
+| MLIL | 3,912 | 2,729 / 5,148 | 3,450 / 5,950 |
+| MLIL SSA | 8,590 | 4,343 / 6,827 | 12,904 / 15,330 |
+| LLIL | 4,166 | 2,423 / 4,810 | 2,933 / 5,464 |
+| LLIL SSA | 9,105 | 3,530 / 5,923 | 10,813 / 13,294 |
+| Disassembly | 4,730 | 3,443 / 5,318 | 4,029 / 5,867 |
+
+The median function fits in one page in every representation; its maximum sizes
+were 2,150 stdout bytes and 3,911 result bytes. Rechecked actual default CLI
+requests for both functions in all representations: all remained inline.
+Measurements, native renderings and probe scripts are under `temp/typed/`.
+These measurements choose a useful default, not a guarantee for unusually long
+rows; existing artifacts remain the fallback. No extra envelope metadata was
+needed. The inspected bn implementation informed the comparison;
+no new peer code was borrowed.
+
+`cargo test` passed all five checks; Python execution/protocol/API-index suites
+passed 6/5/1. `nix build` succeeded, then
+`python3 tests/smoke.py --binja ./result/bin/binja --sample temp/samples/a/sample`
+passed from its disposable external workspace, `/tmp/binja-smoke-jp6lw_4o`.
+New smoke coverage compares Pseudo C with the independent language-function API,
+checks native IL indexes/addresses for all six IL variants, paging and recovery,
+artifact text/JSON, disassembly bytes and linear continuation, Raw decoding,
+ambiguous names and same-address platforms, skipped analysis and invalid flags.
+A separate one-byte `0x0f` input confirmed the undecodable-instruction stop.
+Existing queue, save/reopen, retention and shutdown checks still pass. Verification
+was on x86-64; other architecture decoders were not exercised.
+
+Updated the packaged guide, README and design contract, retiring the addressed
+HLIL/disassembly Python recipe. Saved scratch databases and stopped the checkout
+GUI cleanly.

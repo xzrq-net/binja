@@ -1,8 +1,8 @@
 # Headless Binary Ninja
 
 `binja` is a CLI for agent-driven static analysis with Binary Ninja Personal.
-It manages a persistent GUI on a private Wayland compositor and runs Python
-against its open BinaryViews. It includes API lookup, recoverable requests,
+It manages a persistent GUI on a private Wayland compositor and provides typed
+analysis commands with Python as the backstop. It includes API lookup, recoverable requests,
 and explicit database saves. The client and session supervisor are one Rust
 binary; scripts and the resident plugin run in Binary Ninja's bundled Python.
 
@@ -29,7 +29,9 @@ Run commands from your analysis workspace, with a binary named `sample`:
 ```sh
 binja start
 binja open ./sample
-binja py -c 'result = [(f.name, hex(f.start)) for f in bv.functions][:10]'
+binja decompile main
+binja il main
+binja disasm main
 binja py -c 'bv.set_comment_at(bv.entry_point, "Reviewed entry point")'
 binja save ./analysis.bndb
 binja stop
@@ -43,6 +45,10 @@ and recovery after a client timeout. It works without a session or license.
 Human output is concise; `--verbose` includes the full record and `--json` returns
 it directly. Artifact files survive until session shutdown or a new lifetime starts.
 Copy results you need to keep before stopping.
+
+`decompile`, `il`, and `disasm` render the GUI's own listings in bounded pages;
+functions resolve by exact name or address, and ambiguity is an error rather
+than a guess.
 
 ## Development
 

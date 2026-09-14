@@ -3,8 +3,8 @@
 ## Scope
 
 `binja` provides static analysis through a persistent Binary Ninja Personal GUI.
-The CLI submits Python to that process and exposes the matching API documentation,
-so an agent can look up and execute unfamiliar operations. Live debugging and
+The CLI provides typed analysis commands with Python as the backstop, plus matching
+API documentation for looking up unfamiliar operations. Live debugging and
 specialized loader preparation are outside this interface.
 
 [README](../README.md) covers installation; `binja skill` is the installed workflow
@@ -17,7 +17,8 @@ records experiments and their results.
 | Component | Owns |
 | --- | --- |
 | Nix package | Runtime distribution, dependencies, CLI, plugin, and API documentation |
-| CLI | Session selection, arguments, submitted scripts, and output formatting |
+| CLI | Session selection, arguments, submitted scripts, and request presentation |
+| Python command scripts | Typed analysis, native text rendering, and structured results |
 | Session supervisor | Process ownership, private compositor, readiness, and cleanup |
 | Resident GUI plugin | RPC, target identity, execution scheduling, and request results |
 | Binary Ninja | Live BinaryViews, analysis, edits, and database serialization |
@@ -52,7 +53,7 @@ submissions are rejected before admission. A response that exceeds its bound
 returns an error without changing the execution outcome.
 
 Requests contain `protocol: 3`, `generation`, `op`, and operation parameters.
-`submit` carries `spec` with `id`, `kind` (`py`, `open`, or `save`; default `py`),
+`submit` carries `spec` with `id`, `kind` (`py`, `open`, `save`, `decompile`, `il`, or `disasm`; default `py`),
 `source`, `filename`, `args`, `target`, `no_target`, and `allow_incomplete`.
 `submit` and `request` accept `wait`, default 0, as finite nonnegative seconds
 within the server platform's timeout range. The wait budget starts after
@@ -191,6 +192,45 @@ analysis pipeline.
 Use native virtual addresses in Python and preserve integer precision in output.
 Readable addresses can use hexadecimal strings; file offsets must be identified
 separately. A universal address schema is unnecessary.
+
+## Typed analysis commands
+
+Clap parses typed commands into arguments for packaged Python scripts, submitted
+through the same worker as `py`, `open` and `save`. Request kinds identify the
+operation; target retention, readiness, recovery and artifact limits are shared.
+There is no separate analysis RPC or command dispatcher.
+
+`binja/analysis.py` owns shared FUNCTION/ADDRESS resolution and listing output.
+FUNCTION first matches exact native names, then resolves an address and considers
+all starting/containing functions. ADDRESS accepts symbols, native numeric syntax
+and `symbol+offset`; symbol ambiguity is checked before `bv.parse_expression`
+evaluates the numeric expression. Ambiguities fail with candidates in an error
+string, including platforms for same-address functions. No first-match selection
+or fuzzy matching is used. Raw/skipped/unavailable IL fails explicitly.
+
+`decompile` uses the single-function Pseudo C language representation; `il` uses
+native HLIL/MLIL/LLIL renderings, defaulting to MLIL. Function disassembly preserves
+native annotations and bytes. Linear `disasm --count/--end` decodes through the
+view architecture without requiring function analysis; its exclusive end and
+decode stopping reasons are explicit. Rendering uses linear-view defaults with
+separate address/byte columns and expanded bodies, without GUI inlays.
+
+Python prints the target/function/representation header, listing and continuation
+footer to stdout and returns the structured page in `result`. Rust suppresses
+duplicate result printing for these kinds in human mode, including recovered
+requests. The envelope and spill boundary are unchanged. Text and JSON artifacts
+remain independently readable; command-specific output stays in `result` and stdout.
+
+Function pages use `--offset/--limit` (64 rendered rows by default), reporting
+returned/total counts and next offset. Linear pages continue by address and
+remaining count/end. Pagination rerenders the current view, with no stored
+cursors; edits or reanalysis require restarting pagination. Rows carry native
+hexadecimal `address` and `text`, plus nullable `il_index` for IL or `bytes` for
+disassembly. Blank-row addresses are null. Pseudo C/HLIL addresses are identified
+as anchors, not individual machine instruction addresses. `result` also contains
+target/function identity, representation and page/extent metadata. Read commands
+can reuse this contract with their own row fields; byte spilling does not replace
+semantic scoping.
 
 ## Execution and recovery
 

@@ -1,15 +1,13 @@
 # binja
 
 Use binja for static analysis with Binary Ninja Personal. Run commands from the
-analysis workspace. A GUI session persists between commands; each Python request
-executes in its bundled interpreter.
+analysis workspace. Typed commands cover code inspection; Python is the backstop.
+A GUI session persists between commands, executing requests in its bundled interpreter.
 
 ```sh
 binja start
 binja open ./sample
-binja py <<'PY'
-result = [(f.name, hex(f.start)) for f in bv.functions][:20]
-PY
+binja decompile main
 binja py -c 'bv.set_comment_at(bv.entry_point, "Reviewed entry point")'
 binja save ./analysis.bndb
 binja stop
@@ -129,27 +127,51 @@ default reading order, not a rule.
    and is the epistemic backstop when the ILs disagree with each other or with
    the bytes.
 
-In Python, `f.hlil`, `f.mlil`, and `f.llil` are the IL functions, and
-`f.instructions` yields disassembly; every IL instruction carries `.address`.
-
-### Addressed HLIL and disassembly
-
-Select a function by its start address (the entry point here). An HLIL line's
-address is an anchor, not a one-to-one mapping to machine instructions; several
-lines may share it. Print both listings to inspect the surrounding instructions.
+### Code inspection
 
 ```sh
-binja py <<'PY'
-f = bv.get_function_at(bv.entry_point)
-print(f"{f.name} {f.start:#x}")
-print("HLIL")
-for line in f.hlil.root.lines:
-    print(f"{line.address:#x}  {line}")
-print("Disassembly")
-for tokens, address in f.instructions:
-    print(f"{address:#x}  {''.join(str(t) for t in tokens)}")
-PY
+binja decompile main
+binja il main                       # MLIL by default
+binja il main --view hlil
+binja il main --view llil --ssa
+binja disasm main
+binja decompile main --offset 64 --limit 64
+binja disasm main+10 --count 20
 ```
+
+`decompile` uses the GUI's Pseudo C language renderer, including type casts and
+indentation. `il --view hlil|mlil|llil [--ssa]` prints native IL text with source
+addresses and IL instruction indexes. `disasm FUNCTION` includes native
+annotations and instruction bytes. Pseudo C and HLIL addresses are **anchors**:
+several lines can share one, and they are not a one-to-one mapping to machine
+instructions. MLIL/LLIL instructions can also share a source address.
+
+FUNCTION accepts an exact symbol name (raw or displayed), a start address, or an
+address inside a function. Multiple matches fail with candidate names, addresses
+and platforms; use a unique name/address, or Python for platform selection.
+ADDRESS accepts symbols, hexadecimal numbers and `symbol+offset`. Numeric syntax
+follows `bv.parse_expression`: `main+10` means `main+0x10`; `0n10` is decimal ten.
+Other expressions remain available through Python. A symbol with several distinct
+addresses is ambiguous, including when used as an expression's base.
+
+Listings default to 64 rendered rows, counting signatures, annotations and blank
+lines. The footer reports the total and next `--offset`; repeat the same command,
+target, representation and SSA choice to continue. `--limit N` changes the page
+size. Pages rerender the live view: restart at offset zero after edits or
+reanalysis. IL unavailable on a Raw view or after skipped analysis is an error,
+with no substitution of another representation.
+
+`disasm ADDRESS --count N` or `--end ADDRESS` decodes linearly without needing a
+function; it needs a view architecture (`bv.arch`). The end is exclusive, and an
+instruction crossing it is not emitted. `--limit` bounds each page; the footer
+gives the next address and remaining count/end for continuation. `--offset` is
+only for function listings. Unmapped bytes, undecodable instructions and an end
+inside an instruction have explicit stopping reasons.
+
+`--json` returns the request record with the page in `result`: function identity,
+representation, `rows` of `address` and `text` (plus `il_index` for IL, `bytes`
+for disassembly), and page metadata. These commands share `py`'s readiness, wait
+and recovery flags, and spill oversized pages to artifacts like any request.
 
 ### Rename, comment, and verify persistence
 
@@ -237,7 +259,7 @@ PY
 
 ## Requests and recovery
 
-Python, open, and save commands print a request ID to stderr before submitting.
+Python, open, save and code inspection commands print a request ID to stderr before submitting.
 They normally wait up to 30 seconds after admission. `--wait` is not an
 end-to-end command deadline. A client wait expiry exits 2 and leaves the request queued
 or running; retrieve the existing request instead of repeating it:

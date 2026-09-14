@@ -66,6 +66,17 @@ struct Execution {
     )]
     request_id: Option<String>,
 }
+#[derive(Args)]
+struct Page {
+    #[arg(
+        long,
+        default_value = "0",
+        help = "Skip rendered rows (function listings only)"
+    )]
+    offset: usize,
+    #[arg(long, default_value = "64", value_parser = clap::value_parser!(u32).range(1..), help = "Maximum rendered rows per page")]
+    limit: u32,
+}
 fn wait_seconds(value: &str) -> std::result::Result<f64, String> {
     let seconds: f64 = value.parse().map_err(|_| "wait must be a number")?;
     if seconds.is_finite() && (0.0..=9_000_000_000.0).contains(&seconds) {
@@ -125,6 +136,45 @@ enum Commands {
     #[command(about = "Save the intended target to an explicit .bndb path")]
     Save {
         path: PathBuf,
+        #[command(flatten)]
+        execution: Execution,
+    },
+    #[command(about = "Read the GUI's rendered Pseudo C for a function")]
+    Decompile {
+        function: String,
+        #[command(flatten)]
+        page: Page,
+        #[command(flatten)]
+        execution: Execution,
+    },
+    #[command(about = "Read addressed IL; MLIL is the default fallback from decompilation")]
+    Il {
+        function: String,
+        #[arg(long, default_value = "mlil", value_parser = ["hlil", "mlil", "llil"])]
+        view: String,
+        #[arg(long)]
+        ssa: bool,
+        #[command(flatten)]
+        page: Page,
+        #[command(flatten)]
+        execution: Execution,
+    },
+    #[command(
+        about = "Read function disassembly, or a linear --count/--end window without function analysis"
+    )]
+    Disasm {
+        #[arg(value_name = "FUNCTION|ADDRESS")]
+        identifier: String,
+        #[arg(long, conflicts_with_all = ["end", "offset"], value_parser = clap::value_parser!(u64).range(1..), help = "Decode this many instructions starting at ADDRESS")]
+        count: Option<u64>,
+        #[arg(
+            long,
+            conflicts_with = "offset",
+            help = "Exclusive end address for linear decoding"
+        )]
+        end: Option<String>,
+        #[command(flatten)]
+        page: Page,
         #[command(flatten)]
         execution: Execution,
     },
@@ -205,6 +255,15 @@ fn submit(cli: &Cli, state: &Path, execution: &Execution, mut spec: Value) -> Re
         value["client_wait_expired"] = json!(true);
     }
     Ok(value)
+}
+
+fn command_script(resources: &Resources, kind: &str, args: Value) -> Result<Value> {
+    let filename = resources.dir.join("commands").join(format!("{kind}.py"));
+    let source =
+        fs::read_to_string(&filename).with_context(|| format!("Read {}", filename.display()))?;
+    Ok(
+        json!({"kind":kind,"filename":filename,"source":source,"args":args,"no_target":kind == "open"}),
+    )
 }
 
 fn run(cli: &Cli) -> Result<i32> {
@@ -327,14 +386,52 @@ fn run(cli: &Cli) -> Result<i32> {
                 );
             }
             let kind = if open { "open" } else { "save" };
-            let filename = resources.dir.join("commands").join(format!("{kind}.py"));
             (
                 submit(
                     cli,
                     &state,
                     execution,
-                    json!({"kind":kind,"filename":filename,"source":fs::read_to_string(&filename)?,"args":{"path":path},"no_target":open}),
+                    command_script(&resources, kind, json!({"path":path}))?,
                 )?,
+                kind,
+                execution.no_wait,
+            )
+        }
+        Commands::Decompile {
+            function,
+            page,
+            execution,
+        }
+        | Commands::Il {
+            function,
+            page,
+            execution,
+            ..
+        }
+        | Commands::Disasm {
+            identifier: function,
+            page,
+            execution,
+            ..
+        } => {
+            let mut args = json!({"function":function,"offset":page.offset,"limit":page.limit});
+            let kind = match &cli.command {
+                Commands::Decompile { .. } => "decompile",
+                Commands::Il { view, ssa, .. } => {
+                    args["view"] = json!(view);
+                    args["ssa"] = json!(ssa);
+                    "il"
+                }
+                Commands::Disasm { count, end, .. } => {
+                    args["count"] = json!(count);
+                    args["end"] = json!(end);
+                    "disasm"
+                }
+                _ => unreachable!(),
+            };
+            let spec = command_script(&resources, kind, args)?;
+            (
+                submit(cli, &state, execution, spec)?,
                 kind,
                 execution.no_wait,
             )

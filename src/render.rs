@@ -163,7 +163,7 @@ fn output(v: &Value) -> Result<()> {
         println!("Inline output pruned; retained artifacts follow.");
     }
     if let Some(result) = v.get("result") {
-        if !result.is_null() {
+        if !result.is_null() && !matches!(text(v, "kind"), "decompile" | "il" | "disasm") {
             println!("{}", serde_json::to_string_pretty(result)?);
         }
     }

@@ -171,8 +171,8 @@ class Execution:
         if not isinstance(spec.get("source"), str) or not isinstance(spec.get("filename"), str):
             raise Error("Execution requires source text and a filename.")
 
-        if spec.get("kind", "py") not in ("py", "open", "save"):
-            raise Error("Request kind must be py, open, or save.")
+        if spec.get("kind", "py") not in ("py", "open", "save", "decompile", "il", "disasm"):
+            raise Error("Request kind must be py, open, save, decompile, il, or disasm.")
 
         def check_duplicate():
             record = self.records.get(request_id)

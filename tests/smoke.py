@@ -75,6 +75,9 @@ def main():
     def retrieve(record):
         return cli("request", record["id"], "--wait", "20")
 
+    def payload(record):
+        return record["result"] if "result" in record else json.loads(Path(record["result_artifact"]).read_text())
+
     def phase(message):
         print(message, flush=True)
 
@@ -229,6 +232,119 @@ result = bv.file.filename
 """
         assert py(focus_switch, b, args=json.dumps({"path": str(sample_a)}))["result"] == str(sample_b)
         assert py("result = bv.file.filename", "active")["result"] == str(sample_a)
+
+        phase("Typed listings: native Pseudo C, IL addresses, pagination, and recovery")
+        function = py("f = (bv.get_functions_by_name('main') or bv.get_functions_at(bv.entry_point))[0]; "
+            "result = dict(name=f.name, start=hex(f.start), arch=f.arch.name)", a)["result"]
+        name, start = function["name"], function["start"]
+        default = cli("decompile", name, "--target", a)
+        assert default["kind"] == "decompile" and payload(default)["page"]["limit"] == 64
+        full = payload(cli("decompile", start, "--target", a, "--limit", "10000"))
+        assert full["view"] == "pseudo-c" and full["address_kind"] == "anchor"
+        assert all(set(row) == {"address", "text"} for row in full["rows"])
+        native = payload(py(f"""f = bv.get_function_at({start})
+s = bn.DisassemblySettings.default_linear_settings()
+s.set_option(bn.DisassemblyOption.ShowAddress, False)
+result = [str(line) for line in f.pseudo_c.get_linear_lines(f.hlil.root, s)]
+""", a))
+        rendered = [row["text"] for row in full["rows"]]
+        body_start = rendered.index(native[0])
+        assert rendered[body_start:body_start + len(native)] == native
+        first = cli("decompile", name, "--target", a, "--limit", "3")
+        second = payload(cli("decompile", name, "--target", a, "--offset", "3", "--limit", "3"))
+        assert payload(first)["rows"] + second["rows"] == full["rows"][:6]
+        assert payload(first)["page"]["next_offset"] == 3 and second["page"]["total"] == len(full["rows"])
+        end_page = payload(cli("decompile", start, "--target", a, "--offset", str(len(full["rows"]))))
+        assert end_page["rows"] == [] and end_page["page"]["next_offset"] is None
+        for identifier in (start, hex(int(start, 16) + 1), name + "+1"):
+            assert payload(cli("decompile", identifier, "--target", a))["function"]["start"] == start
+        human = subprocess.check_output([binary, "request", first["id"]], cwd=workspace, env=env, text=True)
+        assert f"{name} @ {start}  pseudo-c" in human and "continue with --offset 3" in human
+        assert '"rows":' not in human and '"function":' not in human
+        assert cli("il", start, "--target", a, "--request-id", first["id"]) == cli("request", first["id"])
+        recovered = retrieve(cli("il", name, "--target", a, "--no-wait"))
+        assert recovered["kind"] == "il" and payload(recovered)["view"] == "mlil"
+        for view in ("hlil", "mlil", "llil"):
+            for ssa in (False, True):
+                flags = ["--ssa"] if ssa else []
+                record = payload(cli("il", start, "--target", a, "--view", view, *flags))
+                assert record["ssa"] == ssa
+                indexes = {row["il_index"]: row["address"] for row in record["rows"] if row["il_index"] is not None}
+                assert indexes and all(set(row) == {"address", "text", "il_index"} for row in record["rows"])
+                py(f"""f = bv.get_function_at({start})
+il = f.{view}{'.ssa_form' if ssa else ''}
+for index, address in args.items():
+    assert hex(il[int(index)].address) == address, (index, address)
+""", a, args=json.dumps(indexes))
+
+        phase("Typed listing spills retain text and JSON")
+        py("import binja.execution as execution; execution.INLINE_BYTES = 128", no_target=True)
+        try:
+            spilled = cli("decompile", name, "--target", a, "--limit", "3")
+            assert Path(spilled["stdout"]["artifact"]).read_text().endswith("continue with --offset 3\n")
+            assert payload(spilled) == payload(first)
+            human = subprocess.check_output([binary, "request", spilled["id"]], cwd=workspace, env=env, text=True)
+            assert spilled["stdout"]["artifact"] in human and '"rows":' not in human
+        finally:
+            py("import binja.execution as execution; execution.INLINE_BYTES = 16384", no_target=True)
+
+        phase("Function and linear disassembly, native hex offsets, and stopping reasons")
+        disasm = payload(cli("disasm", start, "--target", a))
+        assert all(set(row) == {"address", "text", "bytes"} for row in disasm["rows"])
+        instructions = [row for row in disasm["rows"] if row["bytes"]]
+        assert instructions
+        py("for row in args:\n    raw = bytes.fromhex(row['bytes'])\n    assert bv.read(int(row['address'], 16), len(raw)) == raw",
+            a, args=json.dumps(instructions))
+        linear = payload(cli("disasm", start, "--target", a, "--count", "5"))
+        chunk = payload(cli("disasm", start, "--target", a, "--count", "5", "--limit", "2"))
+        rest = payload(cli("disasm", chunk["next_address"], "--target", a, "--count", str(chunk["remaining_count"])))
+        assert chunk["rows"] + rest["rows"] == linear["rows"]
+        assert linear["remaining_count"] == 0 and linear["stopped_reason"] is None
+        by_end = payload(cli("disasm", start, "--target", a, "--end", linear["next_address"]))
+        assert by_end["rows"] == linear["rows"] and by_end["next_address"] == linear["next_address"]
+        split = next(row for row in instructions if len(bytes.fromhex(row["bytes"])) > 1)
+        partial = payload(cli("disasm", split["address"], "--target", a, "--end", hex(int(split["address"], 16) + 1)))
+        assert partial["rows"] == [] and partial["stopped_reason"] == "end splits an instruction"
+        offset = payload(cli("disasm", name + "+10", "--target", a, "--count", "1"))
+        assert offset["start"] == hex(int(start, 16) + 0x10)
+        unmapped = payload(cli("disasm", "0xffffffffffff0000", "--target", a, "--count", "1"))
+        assert unmapped["stopped_reason"] == "unmapped address"
+        assert "Raw" in cli("decompile", start, "--target", raw, code=1)["error"]
+        assert "Raw" in cli("il", start, "--target", raw, code=1)["error"]
+        raw_offset = py(f"result = bv.get_data_offset_for_address({start})", a)["result"]
+        py("bv.arch = bn.Architecture[args]", raw, args=json.dumps(function["arch"]))
+        raw_disasm = payload(cli("disasm", hex(raw_offset), "--target", raw, "--count", "5"))
+        assert [r["bytes"] for r in raw_disasm["rows"]] == [r["bytes"] for r in linear["rows"]]
+        assert "after" in cli("disasm", start, "--target", a, "--end", start, code=1)["error"]
+
+        phase("Ambiguous names/addresses and skipped analysis fail explicitly")
+        renamed = py("fs = list(bv.functions)[:2]; result = [(hex(f.start), f.name) for f in fs]; "
+            "[setattr(f, 'name', 'binja_ambiguous') for f in fs]", a)["result"]
+        error = cli("decompile", "binja_ambiguous", "--target", a, code=1)["error"]
+        assert "Ambiguous function" in error and all(address in error for address, _ in renamed)
+        error = cli("disasm", "binja_ambiguous+1", "--count", "1", "--target", a, code=1)["error"]
+        assert "Ambiguous address" in error and all(address in error for address, _ in renamed)
+        py("for address, name in args:\n    bv.get_function_at(int(address, 16)).name = name", a, args=json.dumps(renamed))
+        platform = py(f"""f = bv.get_function_at({start})
+platform = next(p for p in bn.Platform if p.arch == f.arch and p != f.platform)
+bv.create_user_function(f.start, platform)
+bv.update_analysis_and_wait()
+result = platform.name
+""", a)["result"]
+        try:
+            error = cli("decompile", start, "--target", a, code=1)["error"]
+            assert "Ambiguous function" in error and platform in error and function["arch"] in error
+        finally:
+            py(f"bv.remove_user_function(bv.get_function_at({start}, bn.Platform[args])); bv.update_analysis_and_wait()",
+                a, args=json.dumps(platform))
+        py(f"bv.get_function_at({start}).analysis_skipped = True; bv.update_analysis_and_wait()", a)
+        assert "skipped" in cli("decompile", start, "--target", a, code=1)["error"]
+        py(f"bv.get_function_at({start}).analysis_skipped = False; bv.update_analysis_and_wait()", a)
+        for arguments in (("il", start, "--view", "invalid"), ("decompile", start, "--limit", "0"),
+                ("disasm", start, "--count", "0"), ("disasm", start, "--count", "1", "--end", start),
+                ("disasm", start, "--count", "1", "--offset", "1"), ("il", start, "--offset", "-1")):
+            invalid = subprocess.run([binary, *arguments], cwd=workspace, env=env, text=True, capture_output=True)
+            assert invalid.returncode == 2 and "Request " not in invalid.stderr
 
         phase("Queue receipts, pending cap, cancellation, expiry, and listing")
         release = workspace / "release-worker"
