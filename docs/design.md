@@ -431,4 +431,6 @@ and the limit needed to retrieve the rest.
 `--help` points to `binja skill`, which prints a single packaged guide. The guide
 teaches working commands, target selection, API lookup, readiness, saving, and
 failure recovery. Extend it from observed usage friction; avoid duplicating API
-documentation or including development status in the installed instructions.
+documentation, `--help` text, notices the tool prints on every call, or
+development status in the installed instructions. Sentences that only make
+sense against a previous version belong in the log, not the guide.

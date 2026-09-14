@@ -1356,3 +1356,41 @@ cleanup. Screenshots and receipts: `/tmp/binja-startup-i1n5m37w`.
 (`/tmp/binja-smoke-4wkfy379`). Transcripts are under `temp/startup-deadline/`.
 The modal is a deterministic test fixture; no real license or update dialog was
 triggered.
+
+## 2026-09-13 — Guide compression with cold subagents (dxp6mv)
+
+Five fresh subagents (GPT, Fable, GPT, Fable, GPT) each read the current guide
+cold from an external workspace, ran a live exercise against `samples/target`
+or a bash binary, and reported leaks, cuttable prose, rules they needed, and
+false claims. Each round's report fed a rewrite before the next reviewer.
+Exercises covered rename/prototype/save/reload, reference traversal and queue
+timeout recovery, multi-target retype/undo/close and queue saturation,
+declare/proto/comment/linear disasm/analysis hold, and a final verification
+of the rewritten claims.
+
+Results with the `o200k_base` proxy: 4792 tokens, 415 lines, before; 2621
+tokens, 258 lines, after. What went: three copies of the pagination rules,
+JSON field inventories for request and page records, the custom `--request-id`
+grammar (now only in `--help`), receipt and exit-code narration, the
+`target_snapshot` paragraph, the persistence recipe, "remains"/"still"
+wording, and every sentence that restated a notice the tool prints on each
+call (HLIL anchors, code/data source, `total_bytes`, type-library column,
+exclusive ends, zero-references caveat). Two claims were corrected on
+evidence: `declare` installs an included type only when a top-level
+declaration uses it, and linear `disasm` carries no symbols, comments or
+variable annotations. "No architecture specifics" for LLIL was softened to
+"normalized operations" after a reviewer showed `rbp`/`fsbase` in the output.
+
+Rules every trial subject cited as necessary and kept verbatim in meaning:
+hex offsets in `symbol+offset`, the analysis-hold resume one-liner, no
+parent-directory search for `.binja`, the Raw view explanation, `py` per-request
+globals, exit 2 recovery, one undo entry per request, and `callers` folding
+import symbols. Follow-ups filed from tool observations: jxc5gg (cap-rejected
+IDs get the generic unknown-ID warning), 33qaa7 (dataclass fields missing from
+`api members`), sq389d (hold error lacks the resume command), aqxvch (`declare`
+no-op on include-only headers).
+
+Verification: `nix build`, installed `binja skill` matches `binja/guide.md`,
+and the installed smoke suite passed from `/tmp/binja-smoke-2uoov4wm`. Reports,
+task briefs, and guide versions v0 through v4 are under
+`temp/guide-compression/`.

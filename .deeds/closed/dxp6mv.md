@@ -24,3 +24,5 @@ the recipes runnable and validated, and keep every rule that a trial subject
 actually needed. Measure tokens before and after with the same tokenizer proxy
 used in the investigation log. Do not move content into `docs/`; the guide is
 the single installed source.
+
+Closed: Guide compressed from 4792 to 2621 o200k tokens over five cold subagent reviews; two factual corrections; four tool follow-ups filed (jxc5gg, 33qaa7, sq389d, aqxvch). Evidence in temp/guide-compression/ and docs/log.md.
