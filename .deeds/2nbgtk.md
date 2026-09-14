@@ -26,3 +26,10 @@ r2neck open until those trials and their resulting fixes are complete.
 ## Done when
 
 The smoke workflow passes and a fresh agent completes the basic task through the installed interface. Record review findings and their disposition, remaining usability friction, and exact unverified portions in the investigation log. Review may validly produce no findings; name its coverage. Close `r2neck` when all MVP parts meet their criteria, commit locally, and finalize with `jj new`.
+
+## Status
+
+Usability trials ran on 2026-09-13 with three GPT subjects; all tasks succeeded
+through the installed interface. Findings are filed as `r23mma`, `nvafxz`,
+`6jqt5a`, `rcxvky`, with queueing observations on `t87ez9`. Still open here:
+the bounded subagent implementation review, and the fixes from those findings.

@@ -577,3 +577,59 @@ requests, artifact deletion, reuse without replay, save after 4096 historical
 records, and rendering of pruned records. Review found no divergence from
 intent; one instruction was followed literally (a startup error message was
 reworded to make a grep clean), which is harmless.
+
+## 2026-09-13 — First usability trials with GPT
+
+Three GPT subjects (Codex, `gpt-6-astra`, default effort, via ception) each ran
+one task in its own directory under `/tmp/binja-trials/`, with no repository
+`AGENTS.md`, no design context, and the installed CLI reached through a neutral
+`bin/` symlink. Subjects were told they were trial participants whose opinion
+of the tooling was the deliverable, asked to treat binja as a black box, and
+asked to write a friction report. Briefs, reports, and request snapshots are in
+`temp/trials/`. Two setup notes: the direnv devshell had a stale nix-direnv
+cache and served a pre-`osummwtp` build that demanded `--state-dir`, so the
+trials used an explicit fresh build; and the brief called `sample` a C program
+when it is C++, which every subject noticed and none was derailed by.
+
+| Trial | Input | Task | Result | Wall time |
+| --- | --- | --- | --- | --- |
+| A | `sample` (17 KiB C++) | explain `main`, rename, comment, save, restart, verify | success, 9 renames and 19 comments verified after restart | 4m 01s |
+| B | `bash` (1.1 MiB) | per-import caller counts for four libc imports, rename top five, save, verify | success, counts cross-checked against `get_code_refs` | 3m 21s |
+| C | `rg` (6.4 MiB) plus `sample` | inventory both, save both, report analysis time | success, `rg` analysis 41.9 s crossed the 30 s client wait and was recovered with `request --wait` | 3m 27s |
+
+No task needed a workaround, a forced stop, a repeated mutation, or a look at
+the source. The only failing CLI invocations were guessed API lookups
+(`Function.set_user_name`, `Function.size`) and `status` after a clean stop.
+Subjects rated the transport, targets, request IDs, and save/reopen as working
+on the first attempt, and located the effort in reconstructing Binary Ninja
+Python idioms. Consolidated friction, filed as `r23mma` (status after stop and
+view-versus-file counts), `nvafxz` (property writability, enum members, search
+truncation in `api show`/`search`), `6jqt5a` (target snapshot labeling, JSON
+timeout marker, elapsed/progress, "headless" wording), and `rcxvky` (guide
+recipes: addressed HLIL with disassembly, rename/comment, import callers,
+inventory). The subjects' own first-fix picks were `status` after stop (A),
+property writability (B), and request observability (C).
+
+Queueing observations for `t87ez9`, from the 15 s request snapshots and the
+command trails. Across 18 session-bound requests in three sessions, no request
+was submitted while another was running or queued; the smallest gap after the
+previous completion was 70 ms, from sequential commands in one shell. All three
+subjects did run session-less `api` lookups in a second shell while `start;
+open` ran in the first, and subject C ran `status`, `targets`, and `requests`
+during the 42 s analysis. Asked afterwards, all three said they serialized
+target-bound work because later steps depended on earlier results, not because
+of anything the tool said; C expected a `py` submitted during analysis to be
+queued behind the readiness gate. All three prefer queueing over a busy error,
+on the condition that the receipt says "queued", names the retained target and
+what it waits behind, and supports cancel. All three would accept a busy error
+only if it states unambiguously that the request was not accepted and will not
+execute, because otherwise mutation retries become ambiguous. None used
+`requests` for recovery in a crowded session; all three want it to lead with
+running and queued requests (ID, target, phase, elapsed) and to filter or limit
+the completed history.
+
+Assessment: the observation window supports a small queue with an explicit
+queued receipt over a no-backlog busy response; the decision stays with the
+user in `t87ez9`. Not covered by these trials: contention between two clients
+on one session, cancellation, multi-file sessions beyond C's two targets, and
+the bounded implementation review that `2nbgtk` also lists.
