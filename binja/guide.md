@@ -109,6 +109,24 @@ use `on_ui` only for GUI calls. Raw views have no analysis pipeline.
 
 These examples assume one analyzed target; add `--target HANDLE` when needed.
 
+### Choosing a representation
+
+Maintainer preference, learned on large and complex binaries. Treat it as the
+default reading order, not a rule.
+
+1. Decompiled output is the first read. It is not reliable: functions can be
+   incomplete, control flow can come out broken, and inferred types mislead.
+2. When the decompilation looks wrong, HLIL is a weak fallback and MLIL is the
+   strong one. MLIL keeps the analysis results but shows what the decompiler
+   folded away.
+3. LLIL has no strong use in ordinary analysis.
+4. Disassembly is for assembly-level questions (encodings, strides, calling
+   conventions) and is the epistemic backstop when the ILs disagree with each
+   other or with the bytes.
+
+In Python, `f.hlil`, `f.mlil`, and `f.llil` are the IL functions, and
+`f.instructions` yields disassembly; every IL instruction carries `.address`.
+
 ### Addressed HLIL and disassembly
 
 Select a function by its start address (the entry point here). An HLIL line's

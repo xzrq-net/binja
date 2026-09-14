@@ -857,3 +857,27 @@ with a file in bn/plugins and requires failure within eight seconds; measured
 latency was 5.203 seconds. Nix build, all five Rust tests, and the full installed
 live smoke suite passed, including concurrent/late starts. External workspace:
 `/tmp/binja-smoke-4hijreua`; transcript: `temp/start-grace/smoke.txt`.
+
+## 2026-09-13 — CLI surface evaluation against banteg/bn
+
+Compared the installed surface (session lifecycle, `py`, `api`, request
+bookkeeping; no typed analysis commands) with banteg/bn `bd91032` (v0.15.0,
+about 35 commands: function/decompile/il/disasm/xrefs/refs/callsites/search,
+typed data reads, mutations with preview/verify/rollback, bundles, schema). A GPT
+review via ception reached the same ranking independently.
+
+Findings. All three trial subjects asked for typed commands after succeeding
+through Python (reportA.md:185, reportB.md:84, reportC.md:102); the recorded
+effort was reconstructing Binary Ninja idioms, which typed commands remove.
+Ranked gaps: code inspection with a shared ambiguity-rejecting resolver;
+reference traversal with explicit inbound/outbound, code/data, call/reference
+dimensions and import-stub exclusion; offline `api members`; inventories;
+per-view close; type and local edits with native undo grouping. Deliberately
+not borrowed: bn's preview/verify/rollback framework, bundles, schema, token
+counting, `--caller-static`. Function resolution must reject ambiguity, and
+lists must page. The user prefers decompilation first, MLIL as the strong
+fallback, and LLIL rarely; that preference now sits in the guide.
+
+Re-scoped `zbqnx2` into a milestone with parts 5bkxzv, 2wrz2e, fm4yyw, vmnn2h,
+c6z866; filed scpm34 (screenshot and input for stuck GUI states, user
+request) and 8ty558 (database search, frozen); staged 32k3q7.
