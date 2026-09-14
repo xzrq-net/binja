@@ -12,8 +12,4 @@ Extend the verified private-session lifecycle to desktop Wayland and optional hu
 
 Avoid fixed socket paths or working-directory assumptions. Check state isolation and cleanup for both display modes.
 
-Progress 2026-09-14: headless wayvnc (always on, `runtime/vnc.sock`) and
-`start --display desktop` are implemented, documented, and headless-verified;
-see the log entry of that date. Remaining validation: run
-`python3 tests/smoke.py --binja ./result/bin/binja --sample temp/samples/a/sample --desktop`
-on a host Wayland session (it opens the GUI on the ambient display), then close.
+Closed: Headless sessions always run wayvnc on runtime/vnc.sock; start --display desktop uses the caller's socket by absolute path. Both modes verified by the installed smoke suite on the host Hyprland session; container-side desktop forwarding remains unexercised (needs a bind-mounted socket named by absolute path).

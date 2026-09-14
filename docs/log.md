@@ -1467,8 +1467,15 @@ the full headless smoke suite with the dev build (`temp/smoke-vnc.log`),
 which now checks that the VNC framebuffer matches the grim capture size,
 receives a FramebufferUpdate, and that an Escape KeyEvent sent through the
 VNC socket dismisses a Qt modal; that the supervisor owns three children;
-and that force stop removes `vnc.sock` and `wayvncctl`. The `tests/smoke.py
---desktop` phase (start on the shell's display, mode conflict error, open,
-decompile, screenshot/input refusal, unsaved guard, save, stop) is written
-but has not yet been run: it opens a window on the ambient display and is
-waiting for the user's go-ahead.
+and that force stop removes `vnc.sock` and `wayvncctl`. With the user's
+go-ahead, the installed suite then ran with `--desktop` on the Hyprland host
+session (`temp/smoke-desktop.log`, evidence `/tmp/binja-smoke-mycre0cf`):
+the GUI opened on `/run/user/1000/wayland-1` with `DISPLAY` removed and
+`QT_QPA_PLATFORM=wayland` forced, so no X11 fallback was possible; an empty
+`WAYLAND_DISPLAY` fails before spawning; starting the other mode against the
+running session errors; open, decompile, targets, rename, the unsaved-stop
+guard, save, and stop behaved as in headless mode; `screenshot` and `input`
+refused; and the runtime directory held no compositor or VNC sockets. The
+FHS launcher sees the host runtime directory, so no extra bind was needed.
+The desktop run was not exercised from inside the dev container; there the
+host socket would need to be bind-mounted and named by absolute path.
