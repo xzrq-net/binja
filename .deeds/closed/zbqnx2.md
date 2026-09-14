@@ -26,3 +26,5 @@ docs/log.md under the 2026-09-13 CLI surface evaluation. Keep help and the one
 packaged guide current with each part; retire guide recipes a command
 replaces. Preserve applicable notices when borrowing rendering code from
 banteg/bn.
+
+Closed: All parts landed: decompile/il/disasm, xrefs/refs/callers, info/functions/imports/strings, close, rename/comment/proto/retype/declare/undo. Full installed smoke passed on the merged tip.

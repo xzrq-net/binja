@@ -245,104 +245,66 @@ separately. A universal address schema is unnecessary.
 
 ## Typed analysis commands
 
-Clap parses typed commands into arguments for packaged Python scripts, submitted
-through the same worker as `py`, `open` and `save`. Request kinds identify the
-operation; target retention, readiness, recovery and artifact limits are shared.
-There is no separate analysis RPC or command dispatcher.
+- The CLI submits packaged Python scripts as operation-specific request kinds
+  through the `py`/`open`/`save` worker; no separate analysis RPC/dispatcher. Target
+  retention, readiness, recovery and artifact limits are shared. Python owns stdout
+  headers (target/function/representation), content and continuation footers; JSON
+  lives in `result`. Rust suppresses duplicate human-mode results, including
+  recovery. The envelope and spill boundary are unchanged; text/JSON artifacts
+  remain independently readable.
+- `binja/analysis.py` owns resolution/listing output. FUNCTION tries exact native
+  names, then all starting/containing functions at ADDRESS. ADDRESS accepts symbols,
+  native numeric syntax and `symbol+offset`; symbol ambiguity is checked before
+  `bv.parse_expression`. Ambiguities list candidates (including platforms for same-
+  address functions) in error strings; no fuzzy or first-match selection.
+- Listings return `rows` and `page: {offset, limit, returned, total, next_offset}`.
+  `--offset`/`--limit` paginate, with 64 rows by default. Empty totals print `0
+  rows`; offsets past a nonempty list report position/total. Pagination rerenders
+  the current view without cursors; restart after edits/reanalysis. Spilling does
+  not replace semantic bounds.
+- Inspection results identify target/function/representation/extent. Linear-view
+  defaults use expanded bodies, separate address/byte columns and no GUI inlays.
+  Addresses are hexadecimal, IL indexes nullable; both are null on blank rows.
+  Pseudo C/HLIL addresses are anchors, not machine instruction addresses.
+  Raw/skipped/unavailable IL fails explicitly.
+- `references.py` owns import normalization/text, sharing resolver/page helpers.
+  Results include query, target/function identity, resolved addresses, direction
+  (`inbound`/`outbound`), relation (`reference`/`call`) and full-query counts.
+  Xrefs/refs preserve native auto/user references; `kind` is source `code`/`data`,
+  independent of destination and call status. Sort code before data, then
+  source/destination. Inbound text warns: zero references is not proof of no
+  callers; unresolved indirect calls may be absent.
+- `inventory.py` shares filters/headers and page helpers. Functions/imports/strings
+  filter before paging, retaining query options, unfiltered `total_available` and
+  matching `page.total`. Substrings match case-insensitively; no inventory arrays
+  bypass paging.
+- Edits return small, unpaged readbacks with target identity and `changed` after
+  analysis. Rename/comment/proto/retype add `before` and `after`; proto/retype use
+  native rendered types for no-op checks. Worker `execute()` uses native
+  begin/commit undo groups for retained-target requests, including `py`, except
+  `undo`/`close`. Commit on exceptions keeps partial edits undoable; empty groups
+  add no entries. History is shared with GUI edits to the file. No preview, snapshot
+  diffing or automatic rollback.
 
-`binja/analysis.py` owns shared FUNCTION/ADDRESS resolution and listing output.
-FUNCTION first matches exact native names, then resolves an address and considers
-all starting/containing functions. ADDRESS accepts symbols, native numeric syntax
-and `symbol+offset`; symbol ambiguity is checked before `bv.parse_expression`
-evaluates the numeric expression. Ambiguities fail with candidates in an error
-string, including platforms for same-address functions. No first-match selection
-or fuzzy matching is used. Raw/skipped/unavailable IL fails explicitly.
-
-`decompile` uses the single-function Pseudo C language representation; `il` uses
-native HLIL/MLIL/LLIL renderings, defaulting to MLIL. Function disassembly preserves
-native annotations and bytes. Linear `disasm --count/--end` decodes through the
-view architecture without requiring function analysis; its exclusive end and
-decode stopping reasons are explicit. Rendering uses linear-view defaults with
-separate address/byte columns and expanded bodies, without GUI inlays.
-
-Python prints the target/function/representation header, listing and continuation
-footer to stdout and returns the structured page in `result`. Rust suppresses
-duplicate result printing for these kinds in human mode, including recovered
-requests. The envelope and spill boundary are unchanged. Text and JSON artifacts
-remain independently readable; command-specific output stays in `result` and stdout.
-
-Typed listings use `--offset/--limit` (64 rows by default), reporting
-returned/total counts and next offset. Empty totals print `0 rows`; an offset
-beyond a nonempty list reports its position and total. Linear pages continue by address and
-remaining count/end. Pagination rerenders the current view, with no stored
-cursors; edits or reanalysis require restarting pagination. Inspection rows carry
-native hexadecimal `address` and `text`, plus nullable `il_index` for IL or `bytes`
-for disassembly. Blank rows have null address and IL index. Pseudo C/HLIL addresses
-are identified as anchors, not individual machine instruction addresses. `result`
-also contains target/function identity, representation and page/extent metadata.
-Read commands can reuse this contract with their own row fields; byte spilling
-does not replace semantic scoping.
-
-`xrefs` resolves an exact function name to its start, or uses the exact ADDRESS;
-interior addresses stay interior. It lists inbound references with rows
-`{kind, address, functions: [{name, start}]}`; data sources can have no containing
-function. `refs FUNCTION` lists outbound references whose sources lie in analyzed
-basic blocks, excluding gaps, as `{kind, address, to, to_symbol}`. `to_symbol` is
-the destination's native symbol name or null; text shows the name beside its
-address. `kind` is `code` or `data`
-according to the reference source, not its destination; neither implies a call.
-Both preserve native auto and user references.
-
-`callers` lists resolved `call_sites` through `get_callees`, with rows
-`{address, function: {name, start}}`. Import names and any of their stub, slot or
-external addresses select the whole import; its own stubs are excluded from both
-call-site and code-reference counts. These counts are independent. Zero
-references is not proof of no callers because unresolved indirect calls may be
-absent; inbound text states this limitation.
-
-`binja/references.py` owns import normalization and reference text, reusing the
-resolver and page helpers in `analysis.py`. Reference results include query,
-target/function identity, resolved addresses, direction (`inbound`/`outbound`),
-relation (`reference`/`call`), counts, rows and page metadata; `callers` also records
-import symbols and excluded stubs. Counts always cover the full query. Reference
-pages order code before data, then source and destination; caller pages order
-by function start/name, then call-site address. Pagination recomputes the query.
-
-Inventories use the same page helpers, with `inventory.py` sharing text filters
-and page headers. `functions` rows are `{address, name, total_bytes}`, sorted by
-address (default), name, or descending size with deterministic ties. `imports`
-rows are `{address, kind, name, type_library}`, one per native stub/slot/external
-symbol, ordered by name/address/kind; attribution comes from
-`lookup_imported_object_library` and does not identify the runtime provider.
-`strings` rows are `{address, type, length, value}`, ordered by address/type/length;
-length is bytes and value is the full native decoded string, escaped in text.
-These lists filter before paging and report `total_available` alongside the
-matching `page.total`. Substring matching is case-insensitive; functions also
-accept a mutually exclusive Python regex. Query options remain in the result.
-
-`info` returns path, view type, architecture/platform, entry point and function
-count, plus category counts. Libraries, segments and sections form one paged
-`rows` list tagged by `kind`, in that order; segments and sections use address
-order. Segment rows include permissions and explicitly named file offsets and
-lengths; section rows include native semantics. All range ends are exclusive.
-No unbounded inventory arrays sit outside the page contract.
-
-Edits return small readback records with target identity and `changed`, without
-paging. Rename/comment/proto/retype include the requested field's before/after
-values; types use native rendered text for no-op checks. `proto` preserves the
-function's name. Function names and exact start addresses select function
-comments; other addresses select view comments. Variables resolve by unique
-exact name or native `id:0xHEX` / `id:DECIMAL`, with ambiguity errors, and are
-reacquired by ID after analysis. `declare --file` submits the local header text,
-installs named types using native structural equality, and reports each type's
-readback and change status. All edits wait for analysis before reading back.
-
-`execute()` groups retained-target requests (including `py`) with native
-begin/commit undo actions on the worker; `undo` is excluded. Commit runs even
-when execution raises, leaving partial edits undoable. Empty groups do not add
-entries. `undo` reports the last native entry's action summaries before reverting
-it and waits for analysis afterward. History is shared with GUI edits to the
-same file. There is no preview, snapshot diffing or automatic rollback.
+| Command | Row / record fields beyond shared metadata | Specifics |
+| --- | --- | --- |
+| `decompile FUNCTION` | `{address, text, il_index}` | Single-function Pseudo C language representation. |
+| `il FUNCTION` | `{address, text, il_index}` | Native HLIL/MLIL/LLIL; MLIL default. |
+| `disasm FUNCTION` | `{address, text, bytes}` | Native function annotations and bytes. |
+| `disasm ADDRESS --count/--end` | `{address, text, bytes}`; `start, count, end, next_address, remaining_count, stopped_reason`; page `{limit, returned}` | View-architecture decoding needs no function analysis. Exclusive end; continue by address and remaining count/end. |
+| `xrefs FUNCTION/ADDRESS` | `{kind, address, functions: [{name, start}]}` | Inbound references at the exact address; function names select starts, interior addresses stay interior. Data sources may have no containing function. |
+| `refs FUNCTION` | `{kind, address, to, to_symbol}` | Outbound sources in analyzed basic blocks, excluding gaps. Destination native symbol name or null; text shows it beside the address. |
+| `callers FUNCTION/ADDRESS` | `{address, function: {name, start}}`; `symbols, excluded_stubs` | Inbound calls: resolved `call_sites` through `get_callees`, ordered by function start/name then site. Import names or stub/slot/external addresses select the whole import; exclude its own stubs from independent call-site and code-reference counts. |
+| `info` | Path, view type, architecture/platform, entry point, function/category counts; rows tagged by `kind`: library `{name}`, segment `{start, end, permissions, file_offset, file_length}`, section `{name, start, end, semantics}` | One page in library/segment/section order; segments/sections by address. Exclusive range ends, native section semantics. |
+| `functions` | `{address, name, total_bytes}` | Sort by address (default), name or descending size, with deterministic ties. Python regex filtering is mutually exclusive with substring matching. |
+| `imports` | `{address, kind, name, type_library}` | One per native stub/slot/external symbol, ordered by name/address/kind. `lookup_imported_object_library` attribution does not identify the runtime provider. |
+| `strings` | `{address, type, length, value}` | Address/type/length order; length in bytes, full native decoded value, escaped in text. |
+| `rename` | `function` | Changes the function name. |
+| `comment` | `address, scope, function` | Names/exact starts select function comments; other addresses select view comments. |
+| `proto` | `function` | Preserves the function name. |
+| `retype` | `function, variable: {identifier, name, source, index, storage}` | Unique exact variable name or native `id:0xHEX` / `id:DECIMAL`; ambiguity errors. Reacquire by ID after analysis. |
+| `declare --file` | `path, types: [{name, type, width, changed}]` | Submits local header text; installs named types using native structural equality, reading back each type and change status. |
+| `undo` | `summary, remaining` | Captures the last native entry's action summaries before reverting; waits for analysis afterward. |
 
 ## Execution and recovery
 
