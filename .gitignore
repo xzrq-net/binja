@@ -5,3 +5,6 @@
 /.binja/
 __pycache__/
 *.pyc
+
+/binja/build.json
+/binja/api-index.json

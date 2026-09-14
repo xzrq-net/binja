@@ -17,7 +17,7 @@
       vendor = binja.vendor;
     };
     devShells.${system}.default = pkgs.mkShell {
-      packages = [ pkgs.python3 binja ];
+      packages = [ pkgs.python3 pkgs.cargo pkgs.rustc binja ];
     };
   };
 }

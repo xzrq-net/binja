@@ -2,7 +2,7 @@
 """Live protocol-3 checks without a CLI. Pass --package /nix/store/...-binja-... ."""
 import argparse
 import json
-import os
+import subprocess
 from pathlib import Path
 import socket
 import shutil
@@ -15,9 +15,7 @@ p.add_argument('--package', required=True, type=Path)
 p.add_argument('--sample', required=True, type=Path)
 a = p.parse_args()
 sys.path.insert(0, str(a.package / 'lib'))
-os.environ['PYTHONPATH'] = str(a.package / 'lib')
 from binja.common import PROTOCOL, MAX_REQUEST, MAX_RESPONSE, receive, send
-from binja import session
 
 state = Path(tempfile.mkdtemp(prefix='binja-protocol-')) / '.binja'
 sample = state.parent / 'sample'
@@ -52,10 +50,22 @@ def spec(source='result=42', **params):
 def submit(source='result=42', wait=5, **params):
     return rpc('submit', spec=spec(source, **params), wait=wait)
 
+def session_command(state, *args):
+    completed = subprocess.run([str(a.package / 'bin/binja'), '--state-dir', str(state), '--json', *args],
+        capture_output=True, text=True, timeout=90)
+    assert completed.returncode == 0, (args, completed.stdout, completed.stderr)
+    return json.loads(completed.stdout)
+
+def cli_start(state, license):
+    return session_command(state, 'start', *(['--license', str(license)] if license else []))
+
+def cli_stop(state, force=False):
+    return session_command(state, 'stop', *(['--force'] if force else []))
+
 started = False
 try:
     print(f'Live workspace: {state.parent}', flush=True)
-    info = session.start(state, None)
+    info = cli_start(state, None)
     started = True
     generation = info['generation']
     events = submit()
@@ -89,7 +99,7 @@ try:
     artifact = Path(large['result_artifact'])
     assert len(json.loads(artifact.read_text())) == 20000
     assert large['stdout']['bytes'] == 20001 and len(large['stdout']['text']) == 16384
-    assert session.start(state, None)['generation'] == generation
+    assert cli_start(state, None)['generation'] == generation
     assert artifact.exists(), 'reuse must not retire artifacts'
 
     # Receipt must arrive while the worker is occupied, before the blocking result.
@@ -169,11 +179,11 @@ with bridge.execution.lock:
     assert rpc('submit', spec=mutation, wait=5)[-1]['data']['status'] == 'completed'
     saved = command('save', state.parent / 'saved.bndb', target)
     assert saved['status'] == 'completed' and saved['kind'] == 'save'
-    session.stop(state)
+    cli_stop(state)
     started = False
     assert not list((state / 'artifacts').iterdir())
     (state / 'artifacts/stale').write_text('old lifetime')
-    generation = session.start(state, None)['generation']
+    generation = cli_start(state, None)['generation']
     started = True
     assert not list((state / 'artifacts').iterdir())
     reopened = command('open', state.parent / 'saved.bndb')
@@ -183,5 +193,5 @@ with bridge.execution.lock:
     print('Live target mutation, save/reopen, stop/start cleanup', flush=True)
 finally:
     if started:
-        session.stop(state, force=True)
+        cli_stop(state, force=True)
 print('Protocol 3 live checks passed', flush=True)

@@ -4,8 +4,6 @@ import json
 from pathlib import Path
 import sys
 
-from .common import Error, build_config
-
 
 def declarations(root):
     records = []
@@ -73,31 +71,6 @@ def declarations(root):
 
         collect(tree.body, module, "binaryninja")
     return records
-
-
-def query(operation, value=None, limit=15):
-    config = build_config()
-    base = dict(version=config["version"], source=config["vendor"] + "/python/binaryninja",
-                docs=config["vendor"] + "/api-docs")
-    if operation == "paths":
-        return base
-    records = json.loads(Path(__file__).with_name("api-index.json").read_text())
-    if operation == "show":
-        matches = [r for r in records if value in (r["symbol"], r["alias"], r["alias"].removeprefix("binaryninja."))]
-        if not matches:
-            matches = [r for r in records if r["symbol"].endswith("." + value)]
-        if len(matches) != 1:
-            if not matches:
-                raise Error(f"No static declaration for {value!r}; try api search. Inherited and native UI members may need direct documentation inspection (api paths).")
-            raise Error("Ambiguous symbol; use a qualified name: " + ", ".join(r["symbol"] for r in matches))
-        return dict(base, **{k: v for k, v in matches[0].items() if k != "alias"})
-    terms = value.casefold().split()
-    if not terms:
-        raise Error("Supply a nonempty API search query.")
-    matches = [r for r in records if all(t in (r["symbol"] + " " + r["doc"]).casefold() for t in terms)]
-    matches.sort(key=lambda r: (-sum(t in r["symbol"].casefold() for t in terms), len(r["symbol"]), r["symbol"]))
-    return dict(base, total=len(matches), matches=[dict(symbol=r["symbol"], signature=r["signature"],
-        summary=r["doc"].split("\n")[0], source=r["source"], line=r["line"]) for r in matches[:limit]])
 
 
 if __name__ == "__main__":

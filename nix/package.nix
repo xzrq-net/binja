@@ -1,4 +1,4 @@
-{ pkgs, lib, stdenvNoCC, requireFile, unzip, makeWrapper, python3 }:
+{ pkgs, lib, stdenvNoCC, requireFile, unzip, rustPlatform, python3 }:
 let
   version = "6.0.10601";
   archive = requireFile {
@@ -34,13 +34,13 @@ let
       exec ${vendor}/binaryninja "$@"
     '';
   };
-in stdenvNoCC.mkDerivation {
+in rustPlatform.buildRustPackage {
   pname = "binja";
   version = "0.1.0";
   src = lib.cleanSource ../.;
-  nativeBuildInputs = [ makeWrapper ];
-  dontBuild = true;
-  installPhase = ''
+  cargoLock.lockFile = ../Cargo.lock;
+  nativeBuildInputs = [ python3 ];
+  postInstall = ''
     mkdir -p $out/lib $out/share/binja
     cp -r binja $out/lib/
     cp -r licenses $out/share/binja/
@@ -49,9 +49,6 @@ in stdenvNoCC.mkDerivation {
     EOF
     PYTHONPATH=$out/lib ${python3}/bin/python3 -P -m binja.api \
       ${vendor}/python/binaryninja $out/lib/binja/api-index.json
-    makeWrapper ${python3}/bin/python3 $out/bin/binja \
-      --set PYTHONPATH $out/lib --set PYTHONNOUSERSITE 1 \
-      --add-flags '-P -m binja'
   '';
   passthru = { inherit vendor runtime; };
   preferLocalBuild = true;

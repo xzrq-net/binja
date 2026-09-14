@@ -1,0 +1,13 @@
+[package]
+name = "binja"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.6", features = ["derive"] }
+libc = "0.2.189"
+serde_json = { version = "1.0.151", features = ["arbitrary_precision"] }
+signal-hook = "0.4.4"
+socket2 = { version = "0.6.5", features = ["all"] }
+uuid = { version = "1.26.1", features = ["v4"] }
