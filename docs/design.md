@@ -239,7 +239,11 @@ target, and subsequent focus changes cannot redirect queued or running work.
 
 Retaining a view does not freeze analysis or prevent GUI edits. Commands wait for
 completed analysis at execution time and check that the target remains live.
-Analysis on hold fails with instructions to resume it. `--allow-incomplete`
+Analysis on hold fails with a shell-quoted resume command carrying the session's
+`--state-dir`, the request's resolved `--target` handle, and `py
+--allow-incomplete -c 'bv.set_analysis_hold(False); bv.update_analysis_and_wait()'`,
+so the command works from any cwd and cannot be redirected by target inference.
+`--allow-incomplete`
 explicitly skips readiness and appears in the result. A script that triggers
 analysis must wait again before reading dependent results. Raw views have no
 analysis pipeline.
@@ -308,7 +312,7 @@ separately. A universal address schema is unnecessary.
 | `comment` | `address, scope, function` | Names/exact starts select function comments; other addresses select view comments. |
 | `proto` | `function` | Preserves the function name. |
 | `retype` | `function, variable: {identifier, name, source, index, storage}` | Unique exact variable name or native `id:0xHEX` / `id:DECIMAL`; ambiguity errors. Reacquire by ID after analysis. |
-| `declare --file` | `path, types: [{name, type, width, changed}]` | Submits local header text; installs named types using native structural equality, reading back each type and change status. |
+| `declare --file` | `path, types: [{name, type, width, changed}]` | Submits local header text with its directory as an include path; installs every named type the native parser returns, using structural equality, reading back each type and change status. An empty parse is an error: on 6.0.10601, includes found through `include_dirs` contribute only types the header's own declarations use, while includes found in the session cwd contribute all their types. |
 | `undo` | `summary, remaining` | Captures the last native entry's action summaries before reverting; waits for analysis afterward. |
 
 ## Execution and recovery
@@ -367,8 +371,12 @@ Cap-rejected attempts are separate from accepted records. A lifetime total count
 all cap rejections; a ring retains the newest 64 events, oldest first. Each event
 has `id`, `time`, `reason: "pending_cap"`, `kind`, `filename`, `running` (ID or
 `"none"`), `queued`, and `pending_cap`. Default human listings summarize the
-rejection count; `--all`, verbose, and JSON expose the retained events. Duplicate recovery at capacity neither
-executes again nor counts as rejection. Invalid input is not a cap event.
+rejection count; `--all`, verbose, and JSON expose the retained events.
+`request`, request waits, and `cancel` check accepted records first, then the
+ring: a retained rejection fails with an explicit never-executed, safe-to-resubmit
+error, and an ID with neither gets the generic unknown-outcome warning. Duplicate
+recovery at capacity neither executes again nor counts as rejection. Invalid
+input is not a cap event.
 
 Cancellation can stop queued work or a pre-script analysis wait. It cannot safely
 interrupt running Python or native calls. Scripts are neither sandboxed nor
@@ -392,8 +400,12 @@ after a GUI crash requires a successful database save.
 distribution's Python declarations and docstrings. Results include version and
 source locations; `api paths` locates bundled source and Sphinx documentation.
 The index labels declaration `kind`, properties' `writable` status and
-`return_type`, and enum `members`. Members contain a name and source expression,
-plus `value` when statically literal; unresolved expressions are not evaluated.
+`return_type`, and enum `members`. Enum members contain a name and source
+expression, plus `value` when statically literal; unresolved expressions are not
+evaluated. Public annotated assignments directly in a class body produce `field`
+records with `annotation` and optional `default` as source text. Dataclass
+fields and `ClassVar` declarations both qualify; instance storage and
+writability are not inferred.
 Setter declarations are folded into their property rather than indexed as a
 second symbol. Class and enum records also carry `bases`, a C3 `mro`, and
 `unresolved_bases`. The builder resolves local classes and explicit imports,
@@ -403,7 +415,7 @@ static MRO; `object` contributes no public members. Their unknown ancestry can
 limit the order's accuracy. No source expressions are executed.
 
 `api members CLASS [--match TEXT]` lists every matching public indexed member:
-methods, properties, nested classes, and enum values. Direct members come first,
+methods, properties, annotated fields, nested classes, and enum values. Direct members come first,
 then inherited members grouped by owning class in MRO order, alphabetically
 within each class. Overrides appear once, selected by MRO before filtering.
 `--match` is a case-insensitive literal substring of the member name, with outer
@@ -412,8 +424,13 @@ Rows retain declaration metadata and add `name` and `owner`; JSON also reports
 `class`, `mro`, `unresolved_bases`, the requested `match`, matching `total`, and
 unfiltered `total_members`. Empty matches succeed with an empty list; absent,
 ambiguous, or non-class symbols fail. An unindexed base is an explicit coverage
-gap, including when a filter returns no rows. Assignments, instance fields,
-generated members, and private declarations are outside the index. Static
+gap, including when a filter returns no rows. Unannotated assignments, fields
+declared only in method bodies, generated members, and private declarations are
+outside the index. `api show CLASS` renders a class declaration with its
+effective fields, selected and ordered as in `api members` and tagged with
+inherited owners; a field row is `name: annotation = default [field]`, and
+defaults over 160 characters are abbreviated in text while JSON keeps the full
+source. Static
 lookup requires no GUI, license, or Binary Ninja imports; native UI classes and
 other gaps may require direct source or documentation inspection via `api paths`.
 

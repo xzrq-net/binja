@@ -13,3 +13,5 @@ recorded rejection, say so ("rejected at capacity, never executed; safe to
 resubmit") instead of the unknown-ID warning. The guide now states that
 rejections are listed by `requests` but have no record for `request`; update
 that sentence if the tool changes.
+
+Closed: request/wait/cancel report retained cap rejections as never executed and safe to resubmit; generic warning only after the ring evicts the event.

@@ -11,6 +11,10 @@ except SyntaxError as exc:
 unsupported = sorted(str(name) for name in [*parsed.functions, *parsed.variables])
 if unsupported:
     raise Error("declare accepts named types; function/variable declarations need proto or py: " + ", ".join(unsupported))
+if not parsed.types:
+    raise Error(f"No named types to install from {args['path']}. "
+        "Add named type declarations or declare the defining header directly; "
+        "includes may supply only parsing context.")
 before = {name: bv.get_type_by_name(name) for name in parsed.types}
 for name, value in parsed.types.items():
     if before[name] != value:

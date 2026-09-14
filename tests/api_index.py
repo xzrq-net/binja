@@ -87,6 +87,72 @@ class Diamond(source.Left, Renamed):
         self.assertFalse(records['binaryninja.base.Right.name']['writable'])
         self.assertIn('binaryninja.child.Diamond.Nested.nested_only', records)
 
+    def test_annotated_class_fields_preserve_source_without_execution(self):
+        records = self.index({'example.py': '''
+from dataclasses import dataclass, field
+from typing import ClassVar
+module_value: int = must_not_run()
+@dataclass(frozen=True)
+class RegisterValue:
+    value: int
+    offset: int
+    type: RegisterValueType = RegisterValueType.UndeterminedValue
+    confidence: int = core.max_confidence
+    size: int = 0
+    optional: 'RegisterValue | None' = None
+    items: list[int] = field(default_factory=must_not_run)
+    registry: ClassVar[dict[str, int]] = must_not_run()
+    _private: int = 1
+    unannotated = 2
+    def method(self):
+        local: int = 3
+        self.instance: int = 4
+@dataclass
+class ConstantPointerRegisterValue(RegisterValue):
+    """A constant pointer."""
+    offset: int = 0
+    type: RegisterValueType = RegisterValueType.ConstantPointerValue
+class Plain:
+    name: str
+    class Nested:
+        value: int = 7
+class Choice(enum.IntEnum):
+    First: int = 1
+'''})
+        prefix = 'binaryninja.example.'
+        fields = {symbol.removeprefix(prefix): record for symbol, record in records.items()
+            if record['kind'] == 'field'}
+        self.assertEqual(set(fields), {
+            'RegisterValue.value', 'RegisterValue.offset', 'RegisterValue.type',
+            'RegisterValue.confidence', 'RegisterValue.size', 'RegisterValue.optional',
+            'RegisterValue.items', 'RegisterValue.registry',
+            'ConstantPointerRegisterValue.offset', 'ConstantPointerRegisterValue.type',
+            'Plain.name', 'Plain.Nested.value',
+        })
+        value = fields['RegisterValue.value']
+        self.assertEqual(value['alias'], 'binaryninja.RegisterValue.value')
+        self.assertEqual(value['signature'], 'value: int')
+        self.assertEqual(value['annotation'], 'int')
+        self.assertNotIn('default', value)
+        self.assertNotIn('writable', value)
+        source_line = Path(value['source']).read_text().splitlines()[value['line'] - 1]
+        self.assertEqual(source_line.strip(), 'value: int')
+        self.assertEqual(fields['RegisterValue.type']['default'], 'RegisterValueType.UndeterminedValue')
+        self.assertEqual(fields['RegisterValue.confidence']['default'], 'core.max_confidence')
+        self.assertEqual(fields['RegisterValue.size']['default'], '0')
+        self.assertEqual(fields['RegisterValue.optional']['annotation'], "'RegisterValue | None'")
+        self.assertEqual(fields['RegisterValue.optional']['default'], 'None')
+        self.assertEqual(fields['RegisterValue.items']['default'], 'field(default_factory=must_not_run)')
+        self.assertEqual(fields['RegisterValue.registry']['annotation'], 'ClassVar[dict[str, int]]')
+        self.assertEqual(fields['RegisterValue.registry']['default'], 'must_not_run()')
+        self.assertEqual(fields['ConstantPointerRegisterValue.offset']['default'], '0')
+        self.assertEqual(records[prefix + 'RegisterValue']['doc'], '')
+        child = records[prefix + 'ConstantPointerRegisterValue']
+        self.assertEqual(child['doc'], 'A constant pointer.')
+        self.assertEqual(child['mro'], [prefix + 'ConstantPointerRegisterValue', prefix + 'RegisterValue', 'builtins.object'])
+        self.assertEqual(records[prefix + 'Choice']['members'], [{'name': 'First', 'expression': '1', 'value': 1}])
+        self.assertNotIn(prefix + 'Choice.First', records)
+
     def test_unindexed_bases_are_explicit_and_transitive(self):
         records = self.index({'example.py': '''
 from native import Extension as Native

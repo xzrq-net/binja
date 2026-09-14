@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import socket
 import subprocess
@@ -785,6 +786,49 @@ bv.update_analysis_and_wait()
         assert py("result = bv.get_type_by_name('SmokeRejected') is None", a)["result"]
         assert "Read declarations" in cli("declare", "--file", workspace / "missing.h", "--target", a, code=1)["error"]
 
+        # Includes found through include_dirs provide context; dependencies enter
+        # parsed.types only when a declaration uses them. Headers found in the
+        # session cwd can instead return every included type.
+        headers = workspace / "headers"
+        headers.mkdir()
+        dependency = headers / "dependency.h"
+        dependency.write_text("struct SmokeIncluded { int member; };\n"
+            "typedef struct SmokeIncluded SmokeAlias;\nstruct SmokeUnused { int member; };\n")
+        wrapper = headers / "wrapper.h"
+        wrapper.write_text('#include "dependency.h"\n')
+        parse_header = """from pathlib import Path
+path = Path(args)
+parsed = bv.parse_types_from_string(path.read_text(), include_dirs=[str(path.parent)])
+result = sorted(str(name) for name in parsed.types)
+"""
+        assert py(parse_header, a, args=json.dumps(str(wrapper)))["result"] == []
+        empty = cli("declare", "--file", wrapper, "--target", a, code=1)
+        assert "No named types to install" in empty["error"] and str(wrapper) in empty["error"]
+        assert "defining header directly" in empty["error"] and "no-op" not in empty["stdout"]["text"]
+        assert undo_count() == depth
+        wrapper.write_text('#include "dependency.h"\nstruct SmokeOwn { SmokeAlias member; };\n')
+        expected = ["SmokeAlias", "SmokeIncluded", "SmokeOwn"]
+        assert py(parse_header, a, args=json.dumps(str(wrapper)))["result"] == expected
+        included = payload(cli("declare", "--file", wrapper, "--target", a))
+        assert [t["name"] for t in included["types"]] == expected and included["changed"]
+        repeated = payload(cli("declare", "--file", wrapper, "--target", a))
+        assert not repeated["changed"] and all(not t["changed"] for t in repeated["types"])
+        assert py("result = bv.get_type_by_name('SmokeUnused') is None", a)["result"]
+        cli("undo", "--target", a)
+        direct = payload(cli("declare", "--file", dependency, "--target", a))
+        assert {t["name"] for t in direct["types"]} == {"SmokeIncluded", "SmokeAlias", "SmokeUnused"}
+        cli("undo", "--target", a)
+        shutil.copy2(dependency, workspace / "cwd-dependency.h")
+        header.write_text('#include "cwd-dependency.h"\n')
+        assert py(parse_header, a, args=json.dumps(str(header)))["result"] == ["SmokeAlias", "SmokeIncluded", "SmokeUnused"]
+        assert payload(cli("declare", "--file", header, "--target", a))["changed"]
+        assert not payload(cli("declare", "--file", header, "--target", a))["changed"]
+        cli("undo", "--target", a)
+        for text in ("", "#define SMOKE_NUMBER 42\n"):
+            wrapper.write_text(text)
+            assert "No named types to install" in cli("declare", "--file", wrapper, "--target", a, code=1)["error"]
+        assert undo_count() == depth
+
         # A failed request retains its edits as one native undo unit.
         failed = py(f"f = bv.get_function_at({start}); f.name = 'smoke_partial_name'; "
             "f.comment = 'partial comment'; raise ValueError('after edits')", a, code=1)
@@ -827,6 +871,9 @@ bv.update_analysis_and_wait()
             request_id=rejected_id, code=1)["error"]
         assert "not accepted and will not execute" in rejection
         assert slow["id"] in rejection and "7 queued" in rejection and "Safe to resubmit" in rejection
+        for command in (("request", rejected_id), ("request", rejected_id, "--wait", "10"), ("cancel", rejected_id)):
+            error = cli(*command, code=1)["error"]
+            assert "rejected at capacity and never executed" in error and "Safe to resubmit" in error
         duplicate_receipts = []
         duplicate = cli("py", "-c", "raise AssertionError('must not replay')", "--target", a,
             "--no-wait", "--request-id", slow["id"], receipts=duplicate_receipts)
@@ -864,6 +911,7 @@ bv.update_analysis_and_wait()
         assert cli("request", cancelled["id"], code=1)["status"] == "cancelled"
         retry = py("result = 'accepted after cancellation'", a, no_wait=True, request_id=rejected_id)
         assert retry["queue_position"] == 7 and retry["waits_behind"] == extras[-2]["id"]
+        assert cli("request", rejected_id, code=2)["status"] == "queued"
         assert cli("status")["requests"]
         release.touch()
         assert retrieve(slow)["result"] == str(sample_a)
@@ -878,8 +926,13 @@ bv.update_analysis_and_wait()
         retrieve(hold)
         refused = cli("request", gated["id"], "--wait", "5", code=1)
         assert "hold" in refused["error"]
+        resume = shlex.join(["binja", "--state-dir", str(state), "py", "--target", a,
+            "--allow-incomplete", "-c", "bv.set_analysis_hold(False); bv.update_analysis_and_wait()"])
+        assert resume in refused["error"]
         assert py("result = bv.get_comment_at(bv.entry_point)", a, allow_incomplete=True)["result"] == ""
-        py("bv.set_analysis_hold(False); bv.update_analysis_and_wait()", a, allow_incomplete=True)
+        # Execute the printed command while another target is also open.
+        cli(*shlex.split(resume)[1:])
+        cli("info", "--target", a)
 
         phase("Fresh scopes, Python errors, output isolation, and bounded artifacts")
         py("temporary_variable = 1", a)

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import queue
 import re
+import shlex
 import sys
 import threading
 import time
@@ -136,6 +137,9 @@ class Execution:
         with self.lock:
             if request_id in self.records:
                 return self.snapshot(self.records[request_id])
+            if any(event["id"] == request_id for event in self.rejections):
+                raise Error(f"Request {request_id} was rejected at capacity and never executed. "
+                    "Safe to resubmit after capacity is available.")
         raise Error("Unknown request ID; this is not proof that a submitted mutation ran or did not run. Do not blindly resubmit.")
 
     def wait(self, request_id, seconds):
@@ -243,7 +247,12 @@ class Execution:
             if state == self.bn.AnalysisState.IdleState or (bv.view_type == "Raw" and state == self.bn.AnalysisState.InitialState):
                 return
             if state == self.bn.AnalysisState.HoldState:
-                raise Error("Analysis is on hold. Resume it explicitly with py --allow-incomplete, or deliberately allow incomplete results.")
+                target = record["target_snapshot"]["handle"]
+                resume = shlex.join(["binja", "--state-dir", str(self.bridge.state), "py",
+                    "--target", target, "--allow-incomplete", "-c",
+                    "bv.set_analysis_hold(False); bv.update_analysis_and_wait()"])
+                raise Error(f"Analysis is on hold. Resume this target with:\n{resume}\n"
+                    "Or pass --allow-incomplete to deliberately use incomplete results.")
             time.sleep(0.1)
 
     def check_close(self, target, kind, request_id=None):

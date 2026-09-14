@@ -2,6 +2,7 @@
 """Condition wakeups and readiness cancellation without Binary Ninja."""
 from collections import OrderedDict, deque
 from pathlib import Path
+import shlex
 import sys
 import threading
 import time
@@ -52,6 +53,7 @@ class WaitTests(unittest.TestCase):
         e.lock = threading.RLock()
         e.changed = threading.Condition(e.lock)
         e.records = OrderedDict()
+        e.rejections = deque(maxlen=execution_module.KEEP_REJECTIONS)
         e.bn = types.SimpleNamespace(AnalysisState=types.SimpleNamespace(IdleState=0, InitialState=1, HoldState=2))
         self.rid = e.bridge.generation + ':rwait'
         e.records[self.rid] = dict(id=self.rid, status='running', submitted=time.time()-.5,
@@ -100,6 +102,19 @@ class WaitTests(unittest.TestCase):
         self.assertGreater(cancelled['queue_wait_seconds'], 0)
         self.assertNotIn('client_wait_expired', e.wait(self.rid, 0))
 
+    def test_hold_resume_names_retained_target_and_quotes_state_path(self):
+        e = self.execution
+        e.bridge.state = Path("/tmp/agent's workspace/.binja")
+        record = e.records[self.rid]
+        record['target_snapshot'] = dict(handle='abcdef123456:v2')
+        view = types.SimpleNamespace(analysis_state=e.bn.AnalysisState.HoldState, view_type='ELF')
+        with self.assertRaises(Error) as raised:
+            e.wait_ready(view, record)
+        command = str(raised.exception).splitlines()[1]
+        self.assertEqual(shlex.split(command), ['binja', '--state-dir', str(e.bridge.state),
+            'py', '--target', 'abcdef123456:v2', '--allow-incomplete', '-c',
+            'bv.set_analysis_hold(False); bv.update_analysis_and_wait()'])
+
     def test_pruning_keeps_newest_completion_after_later_cancellations(self):
         e = self.execution
         e.bridge.state = Path("/unused")
@@ -135,6 +150,18 @@ class WaitTests(unittest.TestCase):
         self.assertEqual(e.rejected_total, 70)
         self.assertEqual(len(e.rejections), 64)
         self.assertTrue(e.rejections[0]['id'].endswith('reject6'))
+        retained = e.bridge.generation + ':rreject6'
+        aged_out = e.bridge.generation + ':rreject5'
+        for lookup in (e.get, lambda rid: e.wait(rid, 10), e.cancel):
+            with self.assertRaisesRegex(Error, 'rejected at capacity and never executed.*Safe to resubmit'):
+                lookup(retained)
+            with self.assertRaisesRegex(Error, 'Unknown request ID.*Do not blindly resubmit'):
+                lookup(aged_out)
+        # Once the same ID is accepted, its record takes precedence over history.
+        e.records[retained] = dict(id=retained, status='queued', submitted=time.time())
+        self.assertEqual(e.get(retained)['status'], 'queued')
+        self.assertEqual(e.wait(retained, 0)['status'], 'queued')
+        self.assertEqual(e.cancel(retained)['status'], 'cancelled')
         duplicate = e.submit(dict(id=self.rid, source='pass', filename='different.py'))
         self.assertTrue(duplicate['admission_existing'])
         self.assertEqual(e.rejected_total, 70)

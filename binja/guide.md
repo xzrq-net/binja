@@ -75,8 +75,8 @@ binja api paths
 
 These read a static index of the installed distribution and need no session or
 license. `api search` matches declarations and docstrings, so a hit is not proof
-of membership; `api members CLASS` is, and includes inherited members with their
-owning class, though not dataclass fields. Native UI classes and C extension
+of membership; `api members CLASS` is, and includes inherited members and
+annotated fields with their owning class. Native UI classes and C extension
 types are outside the index; `api paths` locates the shipped documentation for
 those.
 
@@ -91,15 +91,10 @@ and imports and database edits persist between requests while variables do not.
 Keep analysis work on the worker; use `on_ui` only for GUI calls.
 
 Target-bound commands wait for analysis to complete before running.
-`--allow-incomplete` skips the wait. Analysis on hold is an error; resume it
-explicitly:
-
-```sh
-binja py --allow-incomplete -c 'bv.set_analysis_hold(False); bv.update_analysis_and_wait()'
-```
-
-A script that edits and then reads dependent results needs
-`bv.update_analysis_and_wait()` between the two. Raw views have no analysis.
+`--allow-incomplete` skips the wait. Analysis on hold is an error that prints
+the resume command for that target. A script that edits and then reads
+dependent results needs `bv.update_analysis_and_wait()` between the two. Raw
+views have no analysis.
 
 ## Reading code
 
@@ -157,10 +152,10 @@ the setter, so an equal inferred type is not pinned as a user override. `proto`
 applies the type and parameter names and keeps the function's symbol name.
 `comment` on an exact function name or start address sets the function comment;
 elsewhere it sets an address comment. An empty comment clears. `declare`
-installs the named types a header declares. Relative includes resolve against
-the header's directory, but an included type is installed only if the header's
-own declarations use it. Function and variable declarations in headers need
-`proto` or Python.
+installs the named types Binary Ninja's parser returns for the header. Includes
+resolve against the header's directory but may serve only as parsing context,
+so declare a defining header directly; a parse that yields no types is an
+error. Function and variable declarations in headers need `proto` or Python.
 
 Variable names and stack locations can repeat, so enumerate native identifiers
 before `retype`:
@@ -241,8 +236,8 @@ binja cancel QUEUED_REQUEST_ID
 
 One worker per session executes requests in order, so batch per-function work
 into one script; parallel shells only hide client overhead. At most 8 requests
-can be unfinished at once; a rejected submission never executes, has no record
-for `request` to retrieve, and can be resubmitted when there is room. `cancel`
+can be unfinished at once; a rejected submission never executes, and `request`
+on its ID says so until the rejection ages out of the newest 64. `cancel`
 works on queued requests and on pre-script analysis waits; running Python or
 native work cannot be interrupted.
 

@@ -1394,3 +1394,39 @@ Verification: `nix build`, installed `binja skill` matches `binja/guide.md`,
 and the installed smoke suite passed from `/tmp/binja-smoke-2uoov4wm`. Reports,
 task briefs, and guide versions v0 through v4 are under
 `temp/guide-compression/`.
+
+## 2026-09-14 — Cold-trial follow-ups: rejected IDs, hold resume, declare, dataclass fields
+
+Four issues from the guide compression trials (jxc5gg, sq389d, aqxvch, 33qaa7),
+implemented by two GPT threads on disjoint files and reviewed here.
+
+`request`, `request --wait` and `cancel` on a cap-rejected ID now fail with
+"rejected at capacity and never executed; safe to resubmit" while the rejection
+is in the 64-event ring, and fall back to the generic unknown-ID warning after
+it ages out; an accepted record for the same ID wins over ring history. The
+analysis-hold error prints a shell-quoted resume command with `--state-dir`
+and the resolved `--target` handle; executed from `/tmp` with two held targets,
+only the named one resumed. The guide's resume one-liner is gone.
+
+`declare` on a header whose parse yields no named types is now an error
+instead of a bare `no-op`. Live probing on 6.0.10601 showed the include rule
+in the old guide sentence was not universal: an include found through
+`include_dirs` (the header's directory) contributes only the types the
+header's own declarations use, but an include found in the session cwd
+contributes every type it defines, including unused ones. The omitted names
+never reach `parsed.types`, so no skipped-type list can be reported; the
+guide now hedges ("includes may serve only as parsing context") and the smoke
+suite pins both observations.
+
+The static API index gains `field` records for public annotated assignments
+in class bodies (523 across 136 vendor classes, dataclass or not, `ClassVar`
+shown as such), rendered `name: annotation = default [field]` with defaults
+over 160 characters abbreviated in text. `api show CLASS` renders a class
+declaration with effective fields and inherited owners;
+`api members ConstantPointerRegisterValue` lists seven members instead of two.
+`RegisterValue` simply has no docstring.
+
+Verification: `cargo test` (10), `tests/execution.py` (9), `tests/api_index.py`
+(5), `tests/protocol.py` (5), the bridge suite against the nix package, and the
+installed smoke suite against `temp/investigation/target`. Live transcripts,
+doc-change proposals and suite logs are under `temp/ux-*`.

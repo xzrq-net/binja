@@ -115,6 +115,27 @@ fn members(records: &[Value], value: &str, name_match: Option<&str>) -> Result<V
     }))
 }
 
+fn show(records: &[Value], value: &str) -> Result<Value> {
+    let mut record = resolve(records, value)?.clone();
+    record
+        .as_object_mut()
+        .context("API record")?
+        .remove("alias");
+    if record["kind"] == "class" {
+        let listing = members(records, value, None)?;
+        record["fields"] = Value::Array(
+            listing["members"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|m| m["kind"] == "field")
+                .cloned()
+                .collect(),
+        );
+    }
+    Ok(record)
+}
+
 pub fn query(
     resources: &Resources,
     operation: &str,
@@ -138,12 +159,10 @@ pub fn query(
         return Ok(base);
     }
     if operation == "show" {
-        let record = resolve(records, value)?;
-        for (key, val) in record.as_object().context("API record")? {
-            if key != "alias" {
-                base[key] = val.clone();
-            }
-        }
+        let record = show(records, value)?;
+        base.as_object_mut()
+            .unwrap()
+            .extend(record.as_object().unwrap().clone());
         return Ok(base);
     }
     let terms: Vec<_> = value.split_whitespace().map(str::to_lowercase).collect();
@@ -184,7 +203,38 @@ pub fn query(
 
 pub fn declaration(value: &Value) -> String {
     let symbol = value["name"].as_str().unwrap_or(text(value, "symbol"));
-    if value["kind"] == "property" {
+    if value["kind"] == "field" {
+        let default = value["default"]
+            .as_str()
+            .map(|expression| {
+                let mut chars = expression.chars();
+                let preview: String = chars.by_ref().take(160).collect();
+                if chars.next().is_some() {
+                    format!(" = {preview}… [full default: --json]")
+                } else {
+                    format!(" = {preview}")
+                }
+            })
+            .unwrap_or_default();
+        format!("{symbol}: {}{default} [field]", text(value, "annotation"))
+    } else if value["kind"] == "class" {
+        // Class signatures describe bases, not generated __init__ parameters.
+        let signature = text(value, "signature");
+        let bases = signature.find('(').map(|i| &signature[i..]).unwrap_or("");
+        let bases = if bases == "()" { "" } else { bases };
+        let mut result = format!("class {symbol}{bases}");
+        if let Some(fields) = value["fields"].as_array().filter(|f| !f.is_empty()) {
+            result.push(':');
+            for field in fields {
+                result.push_str(&format!("\n  {}", declaration(field)));
+                let owner = text(field, "owner");
+                if owner != text(value, "symbol") {
+                    result.push_str(&format!(" [from {owner}]"));
+                }
+            }
+        }
+        result
+    } else if value["kind"] == "property" {
         format!(
             "{symbol}: {} [property, {}]",
             value["return_type"].as_str().unwrap_or("unknown type"),
@@ -246,5 +296,99 @@ mod tests {
                 0
             );
         }
+    }
+
+    #[test]
+    fn show_fields_uses_member_ownership_and_overrides() {
+        let records = json!([
+            {"symbol":"bn.Base", "kind":"class", "signature":"class Base()", "doc":"Base docs.", "mro":["bn.Base"], "unresolved_bases":[]},
+            {"symbol":"bn.Child", "alias":"binaryninja.Child", "kind":"class", "signature":"class Child(Base)", "doc":"", "source":"example.py", "line":12, "mro":["bn.Child","bn.Base"], "unresolved_bases":[]},
+            {"symbol":"bn.Base.offset", "kind":"field", "annotation":"int"},
+            {"symbol":"bn.Base.value", "kind":"field", "annotation":"int"},
+            {"symbol":"bn.Base.items", "kind":"field", "annotation":"list[int]", "default":"field(default_factory=list)"},
+            {"symbol":"bn.Child.offset", "alias":"binaryninja.Child.offset", "kind":"field", "annotation":"int", "default":"0", "source":"example.py", "line":13},
+            {"symbol":"bn.Child.value", "kind":"property", "return_type":"str", "writable":false},
+            {"symbol":"bn.Child.method", "kind":"function", "signature":"method(self)"}
+        ]);
+        let records = records.as_array().unwrap();
+        let filtered = members(records, "Child", Some(" OFFSET ")).unwrap();
+        assert_eq!(filtered["total"], 1);
+        assert_eq!(filtered["total_members"], 4);
+        let row = &filtered["members"][0];
+        assert_eq!(row["owner"], "bn.Child");
+        assert_eq!(row["kind"], "field");
+        assert_eq!(row["line"], 13);
+        assert_eq!(declaration(row), "offset: int = 0 [field]");
+
+        let result = show(records, "Child").unwrap();
+        let fields = result["fields"].as_array().unwrap();
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0]["name"], "offset");
+        assert_eq!(fields[1]["name"], "items");
+        assert_eq!(fields[1]["owner"], "bn.Base");
+        assert_eq!(result["doc"], "");
+        assert_eq!(result["source"], "example.py");
+        assert!(result.get("alias").is_none());
+        assert_eq!(
+            declaration(&result),
+            "class bn.Child(Base):\n  offset: int = 0 [field]\n  items: list[int] = field(default_factory=list) [field] [from bn.Base]"
+        );
+        let base = show(records, "Base").unwrap();
+        assert_eq!(base["doc"], "Base docs.");
+        assert!(declaration(&base).starts_with("class bn.Base:\n"));
+        assert_eq!(
+            declaration(&show(records, "Child.offset").unwrap()),
+            "bn.Child.offset: int = 0 [field]"
+        );
+    }
+
+    #[test]
+    fn field_declarations_distinguish_missing_defaults_from_source_expressions() {
+        let mut field = json!({"name":"value", "kind":"field", "annotation":"Optional[int]"});
+        assert_eq!(declaration(&field), "value: Optional[int] [field]");
+        for expression in ["None", "0", "'text'", "core.max_confidence", "factory()"] {
+            field["default"] = json!(expression);
+            assert_eq!(
+                declaration(&field),
+                format!("value: Optional[int] = {expression} [field]")
+            );
+        }
+        field["annotation"] = json!("ClassVar[int]");
+        assert_eq!(
+            declaration(&field),
+            "value: ClassVar[int] = factory() [field]"
+        );
+        // Long operation tables must not dominate a member listing. Count
+        // characters rather than bytes so source text stays valid Unicode.
+        let prefix = "λ".repeat(160);
+        field["default"] = json!(prefix);
+        assert_eq!(
+            declaration(&field),
+            format!("value: ClassVar[int] = {prefix} [field]")
+        );
+        let full = format!("{prefix}x");
+        field["default"] = json!(full);
+        assert_eq!(
+            declaration(&field),
+            format!("value: ClassVar[int] = {prefix}… [full default: --json] [field]")
+        );
+        assert_eq!(field["default"], full);
+    }
+
+    #[test]
+    fn enum_members_still_come_from_the_class_record() {
+        let records = json!([
+            {"symbol":"bn.Choice", "kind":"enum", "mro":["bn.Choice"], "unresolved_bases":[], "members":[{"name":"First", "expression":"1", "value":1}, {"name":"Computed", "expression":"auto()"}]}
+        ]);
+        let records = records.as_array().unwrap();
+        let result = members(records, "Choice", None).unwrap();
+        assert_eq!(result["total"], 2);
+        assert_eq!(result["members"][0]["kind"], "enum_member");
+        assert_eq!(result["members"][0]["owner"], "bn.Choice");
+        assert_eq!(declaration(&result["members"][0]), "Computed = auto()");
+        assert_eq!(declaration(&result["members"][1]), "First = 1");
+        let shown = show(records, "Choice").unwrap();
+        assert!(shown.get("fields").is_none());
+        assert_eq!(shown["members"].as_array().unwrap().len(), 2);
     }
 }

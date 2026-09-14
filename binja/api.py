@@ -30,20 +30,30 @@ def declarations(root):
                     if name.name != "*":
                         imports[module + "." + (name.asname or name.name)] = origin + "." + name.name
 
-        def collect(body, prefix, public_prefix):
+        def collect(body, prefix, public_prefix, class_fields=False):
             setters = {d.value.id for n in body for d in getattr(n, "decorator_list", [])
                 if isinstance(d, ast.Attribute) and d.attr == "setter" and isinstance(d.value, ast.Name)}
             for node in body:
-                if not isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                is_field = class_fields and isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+                if not is_field and not isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
                     continue
-                if node.name.startswith("_"):
+                name = node.target.id if is_field else node.name
+                if name.startswith("_"):
                     continue
                 if any(isinstance(d, ast.Attribute) and d.attr in ("setter", "deleter") for d in getattr(node, "decorator_list", [])):
                     continue
-                symbol = prefix + "." + node.name
-                public = public_prefix + "." + node.name
+                symbol = prefix + "." + name
+                public = public_prefix + "." + name
                 metadata = {}
-                if isinstance(node, ast.ClassDef):
+                if is_field:
+                    # An annotated declaration need not be a dataclass instance field.
+                    # Keep ClassVar annotations and field(...) defaults as source text.
+                    metadata["kind"] = "field"
+                    metadata["annotation"] = ast.unparse(node.annotation)
+                    if node.value is not None:
+                        metadata["default"] = ast.unparse(node.value)
+                    signature = ast.unparse(node)
+                elif isinstance(node, ast.ClassDef):
                     bases = [ast.unparse(b).split(".")[-1] for b in node.bases]
                     metadata["bases"] = [ast.unparse(b.value if isinstance(b, ast.Subscript) else b)
                         for b in node.bases]
@@ -79,10 +89,10 @@ def declarations(root):
                     if node.returns:
                         signature += " -> " + ast.unparse(node.returns)
                 records.append(dict(symbol=symbol, alias=public, signature=signature,
-                    doc=ast.get_docstring(node) or "", source=str(source), line=node.lineno,
+                    doc="" if is_field else ast.get_docstring(node) or "", source=str(source), line=node.lineno,
                     docs=f"{root.parent.parent}/api-docs/{module}-module.html#{symbol}", **metadata))
                 if isinstance(node, ast.ClassDef):
-                    collect(node.body, symbol, public)
+                    collect(node.body, symbol, public, class_fields=metadata["kind"] == "class")
 
         collect(tree.body, module, "binaryninja")
 

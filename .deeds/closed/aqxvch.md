@@ -13,3 +13,5 @@ the output never mentions the included types it parsed and skipped.
 Options: list parsed-but-skipped type names in the readback, or make the no-op
 line say "no declarations in HEADER" when the parse yielded nothing. Update the
 guide's `declare` sentence if the installation rule changes.
+
+Closed: Empty parse is an explicit error naming the header; include semantics differ by lookup path and are recorded in design.md and pinned by smoke.

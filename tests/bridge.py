@@ -103,7 +103,13 @@ try:
     assert artifact.exists(), 'reuse must not retire artifacts'
 
     # Receipt must arrive while the worker is occupied, before the blocking result.
-    blocker = submit('import time; time.sleep(2)', wait=0)[0]['data']
+    release = state.parent / 'release-worker'
+    blocker = submit(f'''import time
+from pathlib import Path
+deadline = time.monotonic() + 60
+while not Path({str(release)!r}).exists() and time.monotonic() < deadline:
+    time.sleep(.01)
+''', wait=0)[0]['data']
     with connect() as s:
         queued_spec = spec('result="queued"')
         send(s, message('submit', spec=queued_spec, wait=10), MAX_REQUEST)
@@ -121,10 +127,35 @@ try:
     history = rpc('requests', all=True)[-1]['data']
     assert history['rejected_total'] == 1 and history['rejections'][0]['id'] == rejected['id']
     assert rejected['id'] not in {r['id'] for r in history['requests']}
+    for op, params in [('request', {}), ('request', {'wait': 10}), ('cancel', {})]:
+        with connect() as s:
+            send(s, message(op, id=rejected['id'], **params), MAX_REQUEST)
+            error = receive(s, MAX_RESPONSE)['error']
+            assert 'rejected at capacity and never executed' in error and 'Safe to resubmit' in error
+    # The ring records attempts, not permanent evidence for every rejected ID.
+    for _ in range(64):
+        retained = spec()
+        with connect() as s:
+            send(s, message('submit', spec=retained, wait=0), MAX_REQUEST)
+            assert 'not accepted and will not execute' in receive(s, MAX_RESPONSE)['error']
+    history = rpc('requests', all=True)[-1]['data']
+    assert history['rejected_total'] == 65 and len(history['rejections']) == 64
+    assert rejected['id'] not in {r['id'] for r in history['rejections']}
+    for op, params in [('request', {}), ('request', {'wait': 10}), ('cancel', {})]:
+        for rid, expected in [(rejected['id'], 'Unknown request ID'), (retained['id'], 'rejected at capacity')]:
+            with connect() as s:
+                send(s, message(op, id=rid, **params), MAX_REQUEST)
+                assert expected in receive(s, MAX_RESPONSE)['error']
     assert rpc('submit', spec=dict(spec(), id=blocker['id']), wait=0)[0]['existing']
     expired = rpc('request', id=blocker['id'], wait=.01)[-1]['data']
     assert expired['client_wait_expired']
-    rpc('request', id=pending[-1]['id'], wait=10)
+    rpc('cancel', id=pending[-1]['id'])
+    assert rpc('submit', spec=retained, wait=0)[0]['data']['status'] == 'queued'
+    assert rpc('request', id=retained['id'])[-1]['data']['status'] == 'queued'
+    assert rpc('request', id=retained['id'], wait=.01)[-1]['data']['client_wait_expired']
+    assert rpc('cancel', id=retained['id'])[-1]['data']['status'] == 'cancelled'
+    release.touch()
+    rpc('request', id=pending[-2]['id'], wait=10)
     print('Queue receipt, cancellation wakeup, cap rejection, wait expiry', flush=True)
 
     # Disconnect after complete submission must neither cancel nor replay it.
