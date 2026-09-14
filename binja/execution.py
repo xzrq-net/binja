@@ -172,9 +172,9 @@ class Execution:
             raise Error("Execution requires source text and a filename.")
 
         if spec.get("kind", "py") not in ("py", "open", "save", "decompile", "il", "disasm", "xrefs", "refs", "callers",
-                "info", "functions", "imports", "strings"):
+                "info", "functions", "imports", "strings", "rename", "comment", "proto", "retype", "declare", "undo"):
             raise Error("Request kind must be py, open, save, decompile, il, disasm, xrefs, refs, callers, "
-                "info, functions, imports, or strings.")
+                "info, functions, imports, strings, rename, comment, proto, retype, declare, or undo.")
 
         def check_duplicate():
             record = self.records.get(request_id)
@@ -304,7 +304,13 @@ class Execution:
             scope = dict(bn=self.bn, bv=bv, args=spec.get("args", {}), result=None,
                 on_ui=captured_ui, bridge=self.bridge, request=record, __name__="__binja_script__")
             with self.stdout.capture(stdout), self.stderr.capture(stderr):
-                exec(compile(spec["source"], spec["filename"], "exec"), scope, scope)
+                undo_id = bv.begin_undo_actions() if bv is not None and record["kind"] != "undo" else None
+                try:
+                    exec(compile(spec["source"], spec["filename"], "exec"), scope, scope)
+                finally:
+                    # Keep partial edits undoable when a script raises; never roll them back.
+                    if undo_id is not None:
+                        bv.commit_undo_actions(undo_id)
             value = self.store_result(scope["result"], directory / "result.json")
             outcome = dict(value, status="completed")
         except BaseException as exc:

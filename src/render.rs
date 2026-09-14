@@ -176,6 +176,12 @@ fn output(v: &Value) -> Result<()> {
                     | "functions"
                     | "imports"
                     | "strings"
+                    | "rename"
+                    | "comment"
+                    | "proto"
+                    | "retype"
+                    | "declare"
+                    | "undo"
             )
         {
             println!("{}", serde_json::to_string_pretty(result)?);

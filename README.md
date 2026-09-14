@@ -32,7 +32,8 @@ binja open ./sample
 binja decompile main
 binja il main
 binja disasm main
-binja py -c 'bv.set_comment_at(bv.entry_point, "Reviewed entry point")'
+binja comment main "Reviewed entry point"
+binja py -c 'result = [f.name for f in bv.functions if f.comment]'
 binja save ./analysis.bndb
 binja stop
 ```

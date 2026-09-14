@@ -1,7 +1,7 @@
 # binja
 
 Use binja for static analysis with Binary Ninja Personal. Run commands from the
-analysis workspace. Typed commands cover inspection, references and inventories;
+analysis workspace. Typed commands cover inspection, references, inventories and edits;
 Python is the backstop.
 A GUI session persists between commands, executing requests in its bundled interpreter.
 
@@ -9,7 +9,7 @@ A GUI session persists between commands, executing requests in its bundled inter
 binja start
 binja open ./sample
 binja decompile main
-binja py -c 'bv.set_comment_at(bv.entry_point, "Reviewed entry point")'
+binja comment main "Reviewed main"
 binja save ./analysis.bndb
 binja stop
 ```
@@ -186,18 +186,57 @@ representation, `rows` of `address` and `text` (plus `il_index` for IL, `bytes`
 for disassembly), and page metadata. These commands share `py`'s readiness, wait
 and recovery flags, and spill oversized pages to artifacts like any request.
 
-### Rename, comment, and verify persistence
+### Editing and native undo
 
-This edits the entry function. Use a fresh database path; save before
-restarting, then verify the saved values after reopening.
+```sh
+binja rename _start reviewed_entry
+binja comment reviewed_entry "Reviewed entry function"
+binja comment main+10 "Reviewed this instruction"
+binja proto main 'int32_t main(int32_t argc, char** argv)'
+binja declare --file types.h
+```
+
+Edits wait for analysis before and after applying a change, then return the
+native readback with `changed` or `no-op`. Equal names/comments and equal rendered
+function/variable types avoid the setter; an equal inferred type is not pinned
+as a user override. `proto` applies the type and parameter names while preserving
+the function's symbol name. `comment` selects the function comment for an exact
+name or start address, and a view address comment elsewhere. An empty comment
+clears it. `declare` installs named types in the view; headers containing function
+or variable declarations require `proto` or Python. Relative includes use the
+header's directory.
+
+Variable names and stack locations can repeat. Enumerate native identifiers
+with their source/index/storage before using `retype`:
 
 ```sh
 binja py <<'PY'
-f = bv.get_function_at(bv.entry_point)
-f.name = "reviewed_entry"
-f.comment = "Reviewed entry function"
-print(f"{f.start:#x}  {f.name}  {f.comment}")
+from binja.analysis import resolve_function
+f = resolve_function(bv, "main")
+for v in f.vars:
+    print(f"id:{v.identifier:#x}  {v.name}  {v.type}  {v.source_type.name}/{v.index}/{v.storage}")
 PY
+binja retype main var_198 uint32_t
+binja il main --view hlil
+```
+
+Use a unique exact variable name or `id:0xHEX` / `id:DECIMAL` from that inventory;
+ambiguous names report candidates. `retype` reacquires the variable by native ID
+after analysis and reports its actual type. Read fresh HLIL after a prototype or
+variable edit to assess its effect; IL objects retained before an edit are stale.
+Python remains the backstop: `bv.parse_type_string`, `f.set_user_type` or
+`v.set_type_async`, then `bv.update_analysis_and_wait` and reacquire the variable.
+
+`binja undo` reverts the latest native entry and reports its action summaries.
+Target-bound requests, including `py`, share one native begin/commit group;
+`undo` itself is excluded. Empty groups add no entry. A failed script keeps its
+already-applied edits, committed as an undo unit. Undo history belongs to the
+file and interleaves with GUI edits; it is not a per-client history or a rollback
+guarantee. `py --no-target` does not group edits to views it locates itself.
+
+Save to a fresh database path, restart, then verify persistence:
+
+```sh
 binja save ./reviewed.bndb
 binja stop
 binja start

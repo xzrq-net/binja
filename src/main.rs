@@ -151,6 +151,49 @@ enum Commands {
         #[command(flatten)]
         execution: Execution,
     },
+    #[command(about = "Rename a function and read back its name after analysis")]
+    Rename {
+        function: String,
+        new_name: String,
+        #[command(flatten)]
+        execution: Execution,
+    },
+    #[command(about = "Set a function comment at its start, or an address comment elsewhere")]
+    Comment {
+        #[arg(value_name = "ADDRESS|FUNCTION")]
+        identifier: String,
+        text: String,
+        #[command(flatten)]
+        execution: Execution,
+    },
+    #[command(about = "Apply a C function prototype, preserving the function's name")]
+    Proto {
+        function: String,
+        prototype: String,
+        #[command(flatten)]
+        execution: Execution,
+    },
+    #[command(about = "Retype a native variable selected by unique name or id:0xHEX")]
+    Retype {
+        function: String,
+        variable: String,
+        #[arg(value_name = "TYPE")]
+        type_name: String,
+        #[command(flatten)]
+        execution: Execution,
+    },
+    #[command(about = "Install named C type declarations from a local header")]
+    Declare {
+        #[arg(long)]
+        file: PathBuf,
+        #[command(flatten)]
+        execution: Execution,
+    },
+    #[command(about = "Undo the latest native entry and report its action summaries")]
+    Undo {
+        #[command(flatten)]
+        execution: Execution,
+    },
     #[command(about = "Read the GUI's rendered Pseudo C for a function")]
     Decompile {
         function: String,
@@ -513,6 +556,81 @@ fn run(cli: &Cli) -> Result<i32> {
                     command_script(&resources, kind, json!({"path":path}))?,
                 )?,
                 kind,
+                execution.no_wait,
+            )
+        }
+        Commands::Rename {
+            function,
+            execution,
+            ..
+        }
+        | Commands::Comment {
+            identifier: function,
+            execution,
+            ..
+        }
+        | Commands::Proto {
+            function,
+            execution,
+            ..
+        }
+        | Commands::Retype {
+            function,
+            execution,
+            ..
+        } => {
+            let mut args = json!({"function":function});
+            let kind = match &cli.command {
+                Commands::Rename { new_name, .. } => {
+                    args["name"] = json!(new_name);
+                    "rename"
+                }
+                Commands::Comment { text, .. } => {
+                    args["text"] = json!(text);
+                    "comment"
+                }
+                Commands::Proto { prototype, .. } => {
+                    args["prototype"] = json!(prototype);
+                    "proto"
+                }
+                Commands::Retype {
+                    variable,
+                    type_name,
+                    ..
+                } => {
+                    args["variable"] = json!(variable);
+                    args["type"] = json!(type_name);
+                    "retype"
+                }
+                _ => unreachable!(),
+            };
+            let spec = command_script(&resources, kind, args)?;
+            (
+                submit(cli, &state, execution, spec)?,
+                kind,
+                execution.no_wait,
+            )
+        }
+        Commands::Declare { file, execution } => {
+            let path = absolute(file)?;
+            let declarations = fs::read_to_string(&path)
+                .with_context(|| format!("Read declarations {}", path.display()))?;
+            let spec = command_script(
+                &resources,
+                "declare",
+                json!({"path":path,"declarations":declarations}),
+            )?;
+            (
+                submit(cli, &state, execution, spec)?,
+                "declare",
+                execution.no_wait,
+            )
+        }
+        Commands::Undo { execution } => {
+            let spec = command_script(&resources, "undo", json!({}))?;
+            (
+                submit(cli, &state, execution, spec)?,
+                "undo",
                 execution.no_wait,
             )
         }

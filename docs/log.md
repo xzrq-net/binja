@@ -1207,3 +1207,94 @@ multicall ELF (`/run/current-system/sw/bin/true`): a blank HLIL separator row
 carried the IL index of a neighboring instruction while its address was null, so
 the smoke test's index-to-address map lost a real address. Blank rows now carry
 neither address nor IL index, and the smoke test asserts that pairing.
+
+## 2026-09-13 — Editing prerequisite: native undo in the GUI process
+
+Before implementing c6z866, started Binary Ninja 6.0.10601 Personal and ran
+`temp/editing/undo-experiment.py` on sample's main through the existing
+`binja-worker`. Ungrouped name/comment writes each created an undo entry;
+`bv.undo()` reverted only the latter. Explicit `begin_undo_actions()` and
+`commit_undo_actions(id)` grouped both writes into one entry. Worker-side commit
+took about 30 microseconds; undo and redo restored both values after analysis.
+An empty group after undo preserved both stacks. A UI-thread rename invoked
+through `on_ui` and a worker-side comment also shared one group and undid
+together. No UI-thread grouping or workaround was needed, so the request
+wrapper is viable. Evidence: `temp/editing/undo-experiment.json`.
+
+Native entries are ordered oldest to newest; their actions expose
+`summary_text`. Some summaries use the function's current name, so the undo
+command should capture them before reverting. Even writing an unchanged comment
+records an action; typed commands should avoid setters when the requested value
+already matches. These are native undo semantics, not a rollback guarantee.
+
+The second prerequisite was completed before command implementation. Added a
+native proto/retype guide recipe and exercised its operations through
+`temp/editing/types-recipe.py`. Setting `_Z11find_entityj` to
+`void* find_entity(uint32_t entity_id)` with `set_user_type`, followed by
+`update_analysis_and_wait`, preserved its symbol name and changed the fresh HLIL
+comparison from `arg1` to `entity_id`. Retyped main's real stack local `var_198`
+(native ID `0x7ffffffe6800023`, StackVariableSourceType/index 35/storage -408)
+from `int32_t` to `uint32_t`. Reacquiring it by ID after analysis showed the new
+type and `uint32_t var_198 = 0` in fresh HLIL. Both edits were undone after the
+probe. The recipe and before/after evidence are retained in `temp/editing/`.
+
+A parsed function type and its applied native type can compare unequal despite
+identical rendered text. No-op detection should compare native rendered types,
+not Type object equality; it should not turn equal inferred types into user
+overrides. A type name shown by analysis need not be a declared parser type:
+`struct Entity` was not parseable in this view. The recipe uses declared types
+and the command will return parser diagnostics rather than guess a declaration.
+
+## 2026-09-13 — Typed edits, undo grouping, and persistence verification
+
+Implemented `rename`, `comment`, `proto`, `retype`, `declare --file` and `undo`
+after the two prerequisite experiments above. They use the existing command
+scripts, worker, target resolver, readiness gate and text/JSON split. Results
+are small readback records with `changed`, field values and native identity;
+they are not paged listings. No preview, state snapshot/diff, automatic rollback,
+new dependency or borrowed peer implementation was added.
+
+The undo decision is to wrap retained-target execution in begin/commit, on the
+worker, with `undo` excluded. The wrapper is localized to `execute()` and commits
+in `finally`, before result serialization, so failed scripts retain undoable
+partial edits. No changes touch targets.py or the stop path. No-op typed edits
+avoid setters; native empty groups leave undo/redo stacks intact. `undo` captures
+the last entry's action summaries before reverting and reports the remaining
+entry count after analysis. History belongs to the file and includes GUI edits.
+
+Prototype edits preserve the function's symbol name, even if the C declarator
+uses another name. Function/variable type no-ops compare rendered native types,
+so an equal inferred type is not promoted to a user override. Variable selection
+accepts a unique exact name or native `id:0xHEX` / `id:DECIMAL`; errors list
+ambiguous candidates with source/index/storage. Retype reacquires the variable
+by native ID after analysis. Function names and exact starts select function
+comments; other addresses select view comments. Declaration files install named
+types, rejecting function/variable declarations; relative includes use the
+header's directory. Declarations use native structural equality, which detects
+a changed struct member even if the displayed name and total width stay equal.
+
+Exercised all commands in the GUI process on sample. Repeated rename, comment,
+prototype, local-type and declaration requests returned no-op without adding
+undo entries. One undo reverted a grouped Python rename/comment; declaration
+undo reverted both types in a header. Main's native local `var_198`, ID
+`0x7ffffffe6800023`, was retyped to `uint32_t`; fresh HLIL showed
+`uint32_t var_198 = 0`. Saved `temp/editing/verified.bndb`, stopped and restarted
+the session, then compared readbacks: function name `editing_main`, function
+and interior-address comments, `void*(uint32_t entity_id)` prototype on
+`_Z11find_entityj`, the native local ID/type and its affected HLIL, and the
+`EditingPair`/`EditingWord` declarations all persisted unchanged. Evidence is
+under `temp/editing/`, including before-save, after-reopen and persistence JSON.
+
+`nix build` and the full installed smoke suite passed after correcting a stale
+accessor in the new test (`StructureType.members` is direct). New coverage
+includes readback and no-op history counts, request-ID deduplication, human
+rendering, empty undo, both comment scopes, prototype name preservation, a real
+local's updated HLIL, ambiguous/invalid variable selectors, structural declaration
+changes and undo, header rejection, a failed two-edit Python request undone as one
+entry, and rename/comment persistence through save/reopen. Verification covered
+x86-64 ELF on Binary Ninja 6.0.10601 Personal.
+
+Promoted the tested recipe to typed-command usage, retaining native variable
+inventory and the post-analysis HLIL workflow in the guide, and updated the
+small-record/undo contract in design.md. The native recipe remains as disposable
+evidence in `temp/editing/tested-guide-recipe.md`.

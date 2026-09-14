@@ -676,6 +676,123 @@ for symbol, row in zip(symbols, args):
             invalid = subprocess.run([binary, *arguments], cwd=workspace, env=env, text=True, capture_output=True)
             assert invalid.returncode == 2 and "Request " not in invalid.stderr
 
+        phase("Typed edits: readback, no-ops, native variables, and request undo groups")
+        empty_undo = cli("undo", "--target", b)
+        assert payload(empty_undo) == dict(target=b, changed=False, summary=None, remaining=0)
+        original = py(f"f = bv.get_function_at({start}); result = dict(name=f.name, comment=f.comment, type=str(f.type))", a)["result"]
+        undo_count = lambda: py("result = len(bv.file.undo_entries)", a)["result"]
+        depth = undo_count()
+        renamed = retrieve(cli("rename", start, "smoke_typed_name", "--target", a, "--no-wait"))
+        assert renamed["kind"] == "rename" and payload(renamed)["changed"]
+        assert payload(renamed)["before"] == original["name"] and payload(renamed)["after"] == "smoke_typed_name"
+        assert undo_count() == depth + 1
+        assert not payload(cli("rename", start, "smoke_typed_name", "--target", a))["changed"]
+        assert undo_count() == depth + 1
+        assert cli("rename", start, "must_not_replay", "--target", a, "--request-id", renamed["id"]) == cli("request", renamed["id"])
+        human = subprocess.check_output([binary, "request", renamed["id"]], cwd=workspace, env=env, text=True)
+        assert "rename  changed" in human and "smoke_typed_name" in human and '"changed":' not in human
+        undone = payload(cli("undo", "--target", a))
+        assert undone["changed"] and "smoke_typed_name" in undone["summary"] and undone["remaining"] == depth
+        assert py(f"result = bv.get_function_at({start}).name", a)["result"] == original["name"]
+
+        text = "Typed function comment\nSecond line"
+        commented = payload(cli("comment", name, text, "--target", a))
+        assert commented["changed"] and commented["scope"] == "function" and commented["after"] == text
+        assert not payload(cli("comment", start, text, "--target", a))["changed"]
+        assert undo_count() == depth + 1
+        assert payload(cli("undo", "--target", a))["remaining"] == depth
+        assert py(f"result = bv.get_function_at({start}).comment", a)["result"] == original["comment"]
+        address = hex(int(start, 16) + 1)
+        old_comment = py("result = bv.get_comment_at(int(args, 16))", a, args=json.dumps(address))["result"]
+        commented = payload(cli("comment", name + "+1", "Typed address comment", "--target", a))
+        assert commented["scope"] == "address" and commented["address"] == address
+        assert not payload(cli("comment", address, "Typed address comment", "--target", a))["changed"]
+        cli("undo", "--target", a)
+        assert py("result = bv.get_comment_at(int(args, 16))", a, args=json.dumps(address))["result"] == old_comment
+
+        prototype = "uint64_t ignored_name(uint64_t typed_argument)"
+        edited = payload(cli("proto", start, prototype, "--target", a))
+        assert edited["changed"] and edited["after"] == "uint64_t(uint64_t typed_argument)"
+        assert edited["function"]["name"] == original["name"]
+        assert py(f"result = str(bv.get_function_at({start}).type)", a)["result"] == edited["after"]
+        assert not payload(cli("proto", name, prototype, "--target", a))["changed"]
+        assert undo_count() == depth + 1
+        cli("undo", "--target", a)
+        assert py(f"result = str(bv.get_function_at({start}).type)", a)["result"] == original["type"]
+        assert "function type" in cli("proto", start, "int", "--target", a, code=1)["error"]
+        assert cli("proto", start, "not valid C @@@", "--target", a, code=1)["status"] == "failed"
+        assert undo_count() == depth
+
+        local = py(f"""f = bv.get_function_at({start})
+hlil = ' '.join(str(line) for line in f.hlil.root.lines)
+v = next(v for v in f.vars if v.source_type == bn.VariableSourceType.StackVariableSourceType
+    and str(v.type) == 'int32_t' and ('int32_t ' + v.name + ' ') in hlil)
+result = dict(name=v.name, identifier=hex(v.identifier), type=str(v.type))
+""", a)["result"]
+        selector = "id:" + local["identifier"]
+        edited = payload(cli("retype", name, selector, "uint32_t", "--target", a))
+        assert edited["changed"] and edited["after"] == "uint32_t"
+        assert edited["variable"]["identifier"] == local["identifier"]
+        py(f"""f = bv.get_function_at({start})
+v = next(v for v in f.vars if v.identifier == int(args, 16))
+assert str(v.type) == 'uint32_t'
+assert any('uint32_t ' + v.name in str(line) for line in f.hlil.root.lines)
+""", a, args=json.dumps(local["identifier"]))
+        assert not payload(cli("retype", name, edited["variable"]["name"], "uint32_t", "--target", a))["changed"]
+        assert undo_count() == depth + 1
+        cli("undo", "--target", a)
+        assert py(f"result = str(next(v for v in bv.get_function_at({start}).vars if v.identifier == int(args, 16)).type)",
+            a, args=json.dumps(local["identifier"]))["result"] == local["type"]
+        assert "No variable" in cli("retype", name, "binja_missing_variable", "int", "--target", a, code=1)["error"]
+        assert "Invalid variable identifier" in cli("retype", name, "id:bad", "int", "--target", a, code=1)["error"]
+        duplicates = py(f"""f = bv.get_function_at({start})
+variables = [v for v in f.vars if v.source_type == bn.VariableSourceType.StackVariableSourceType and v.type is not None and v.type.width == 4]
+a = variables[0]
+b = next(v for v in variables if v.storage != a.storage)
+result = [hex(v.identifier) for v in (a, b)]
+for v in (a, b):
+    v.set_name_async('binja_duplicate_local')
+bv.update_analysis_and_wait()
+""", a)["result"]
+        try:
+            error = cli("retype", name, "binja_duplicate_local", "uint32_t", "--target", a, code=1)["error"]
+            assert "Ambiguous variable" in error and all(identifier in error for identifier in duplicates)
+        finally:
+            cli("undo", "--target", a)
+        assert undo_count() == depth
+
+        header = workspace / "types.h"
+        header.write_text("struct SmokePair { unsigned int left; unsigned int right; };\ntypedef unsigned int SmokeWord;\n")
+        declared = payload(cli("declare", "--file", header, "--target", a))
+        assert declared["changed"] and {t["name"] for t in declared["types"]} == {"SmokePair", "SmokeWord"}
+        assert all(t["changed"] for t in declared["types"])
+        assert not payload(cli("declare", "--file", header, "--target", a))["changed"]
+        assert undo_count() == depth + 1
+        # Equal display name/width must not hide a changed member type.
+        header.write_text("struct SmokePair { float left; unsigned int right; };\ntypedef unsigned int SmokeWord;\n")
+        changed = payload(cli("declare", "--file", header, "--target", a))
+        assert changed["changed"] and next(t for t in changed["types"] if t["name"] == "SmokePair")["changed"]
+        assert not next(t for t in changed["types"] if t["name"] == "SmokeWord")["changed"]
+        assert py("result = str(bv.get_type_by_name('SmokePair').members[0].type)", a)["result"] == "float"
+        assert "SmokePair" in payload(cli("undo", "--target", a))["summary"]
+        assert py("result = str(bv.get_type_by_name('SmokePair').members[0].type)", a)["result"] == "uint32_t"
+        cli("undo", "--target", a)
+        assert py("result = bv.get_type_by_name('SmokePair') is None and bv.get_type_by_name('SmokeWord') is None", a)["result"]
+        header.write_text("struct SmokeRejected { int member; }; int function_declaration(void);\n")
+        assert "named types" in cli("declare", "--file", header, "--target", a, code=1)["error"]
+        assert py("result = bv.get_type_by_name('SmokeRejected') is None", a)["result"]
+        assert "Read declarations" in cli("declare", "--file", workspace / "missing.h", "--target", a, code=1)["error"]
+
+        # A failed request retains its edits as one native undo unit.
+        failed = py(f"f = bv.get_function_at({start}); f.name = 'smoke_partial_name'; "
+            "f.comment = 'partial comment'; raise ValueError('after edits')", a, code=1)
+        assert failed["status"] == "failed" and undo_count() == depth + 1
+        assert py(f"result = bv.get_function_at({start}).name", a)["result"] == "smoke_partial_name"
+        undone = payload(cli("undo", "--target", a))
+        assert undone["changed"] and "smoke_partial_name" in undone["summary"] and "partial comment" in undone["summary"]
+        assert py(f"f = bv.get_function_at({start}); result = (f.name, f.comment)", a)["result"] == [original["name"], original["comment"]]
+        assert undo_count() == depth
+
         phase("Queue receipts, pending cap, cancellation, expiry, and listing")
         release = workspace / "release-worker"
         slow = py("import time\nfrom pathlib import Path\ndeadline = time.monotonic() + 60\nwhile not Path(args['release']).exists() and time.monotonic() < deadline: time.sleep(.05)\nresult = bv.file.filename",
@@ -815,6 +932,8 @@ for symbol, row in zip(symbols, args):
         assert py("result = 0", a, request_id=request_id) == cli("request", request_id)
 
         phase("Database save failures, orderly shutdown guard, and restart persistence")
+        cli("rename", start, "smoke_persisted_name", "--target", a)
+        cli("comment", start, "Typed persistent function comment", "--target", a)
         assert "Unsaved" in cli("stop", code=1)["error"]
         failed_save = cli("save", workspace / "missing/failed.bndb", "--target", a, code=1)
         assert failed_save["status"] == "failed"
@@ -839,6 +958,8 @@ for symbol, row in zip(symbols, args):
         assert restarted["updates"] == notice
         assert update_cache.read_text() == original_notice
         reopened = cli("open", database)["result"]["handle"]
+        persisted = py(f"f = bv.get_function_at({start}); result = (f.name, f.comment)", reopened)["result"]
+        assert persisted == ["smoke_persisted_name", "Typed persistent function comment"]
         assert py("result = bv.get_comment_at(bv.entry_point)", reopened)["result"] == "persisted annotation"
         assert "No live target" in py("result = 0", a, code=1)["error"]
         assert "old generation" in cli("request", request_id, code=1)["error"]

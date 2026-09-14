@@ -53,9 +53,8 @@ submissions are rejected before admission. A response that exceeds its bound
 returns an error without changing the execution outcome.
 
 Requests contain `protocol: 3`, `generation`, `op`, and operation parameters.
-`submit` carries `spec` with `id`, `kind` (`py`, `open`, `save`, `decompile`, `il`,
-`disasm`, `xrefs`, `refs`, `callers`, `info`, `functions`, `imports`, or `strings`;
-default `py`), `source`, `filename`, `args`, `target`, `no_target`, and `allow_incomplete`.
+`submit` carries `spec` with `id`, `kind` (the submitted operation's name, default
+`py`), `source`, `filename`, `args`, `target`, `no_target`, and `allow_incomplete`.
 `submit` and `request` accept `wait`, default 0, as finite nonnegative seconds
 within the server platform's timeout range. The wait budget starts after
 admission/lookup; it is not an end-to-end CLI deadline.
@@ -309,6 +308,23 @@ count, plus category counts. Libraries, segments and sections form one paged
 order. Segment rows include permissions and explicitly named file offsets and
 lengths; section rows include native semantics. All range ends are exclusive.
 No unbounded inventory arrays sit outside the page contract.
+
+Edits return small readback records with target identity and `changed`, without
+paging. Rename/comment/proto/retype include the requested field's before/after
+values; types use native rendered text for no-op checks. `proto` preserves the
+function's name. Function names and exact start addresses select function
+comments; other addresses select view comments. Variables resolve by unique
+exact name or native `id:0xHEX` / `id:DECIMAL`, with ambiguity errors, and are
+reacquired by ID after analysis. `declare --file` submits the local header text,
+installs named types using native structural equality, and reports each type's
+readback and change status. All edits wait for analysis before reading back.
+
+`execute()` groups retained-target requests (including `py`) with native
+begin/commit undo actions on the worker; `undo` is excluded. Commit runs even
+when execution raises, leaving partial edits undoable. Empty groups do not add
+entries. `undo` reports the last native entry's action summaries before reverting
+it and waits for analysis afterward. History is shared with GUI edits to the
+same file. There is no preview, snapshot diffing or automatic rollback.
 
 ## Execution and recovery
 
