@@ -33,3 +33,5 @@ Usability trials ran on 2026-09-13 with three GPT subjects; all tasks succeeded
 through the installed interface. Findings are filed as `r23mma`, `nvafxz`,
 `6jqt5a`, `rcxvky`, with queueing observations on `t87ez9`. Still open here:
 the bounded subagent implementation review, and the fixes from those findings.
+Stress trial ran on 2026-09-13 against the queue change; findings filed as
+`vf2ttr`, `9353hf`, `ev7w2f`, `9wkssd`, `8vftez`.

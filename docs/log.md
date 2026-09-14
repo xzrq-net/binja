@@ -663,3 +663,47 @@ a rejected ID, and default/full listing order. Existing persistence and recovery
 checks also passed. No evidence argues against the decision, but the original
 trials had no overlapping submissions and this suite does not measure sustained
 multi-client contention or establish an optimal cap. No subagents or commits.
+
+## 2026-09-13 — Stress trial against the small queue
+
+One GPT subject (same setup as the first trials, fresh build of the queue
+change) was asked to design its own stress workload on `rg` around a real
+deliverable: a map of the 40 largest functions with callers, callees, strings,
+and a purpose guess. The brief asked for at least one per-function phase, one
+multi-shell phase, and a push past what the task needs. Report, map, scripts,
+and the request history are in `temp/trials/runD/`.
+
+Outcome: the map was produced and the session survived 249 accepted requests
+in 297 s (243 completed, 5 deliberate failures, 1 cancelled) with no crash,
+stuck worker, or forced stop. Of the 249, 104 were submitted while another
+request was unfinished, up to the cap; queue wait was under 10 ms at p90 and
+23.6 s at the maximum behind a deliberate sleeper. `SystemExit` and
+`KeyboardInterrupt` in scripts did not kill the worker. Twelve concurrent
+submissions of one request ID appended once. The cap, the wait expiry marker,
+the recovery command, and the queued receipts all behaved as documented, and
+the subject called the rejection text clear enough that it did not blindly
+retry.
+
+Where the tool limited the analysis, in the subject's ranking and ours:
+
+- Small-request latency. 100 sequential trivial calls took 25.2 s, median
+  245 ms wall against 1 ms worker time. Confirmed cause: `wait_for` in the CLI
+  sleeps 200 ms before its first poll. This pushed the subject away from
+  per-function querying toward batching and six-to-eight parallel shells
+  (24 to 33 calls/s). Filed `vf2ttr`.
+- Result retention. At 33 calls/s the 64-result window covers two seconds;
+  earlier analysis results were pruned before the subject reread them, so it
+  copied everything to disk immediately. Filed `9353hf`.
+- History export. `requests --all --json` has no error text, pruned flag,
+  request kind, or trace of rejected submissions, so the dump could not explain
+  the run; `elapsed_seconds` changes meaning by phase. Filed `ev7w2f`.
+- Head-of-line blocking and the cap. A `--no-target` read waited behind a 6 s
+  CPU loop, and a 32-shell burst behind a sleeper got 7 accepted and 25
+  rejected. Explicit and recoverable; policy question filed as `8vftez`.
+- Smaller: `cancel` exits 1 on success; the `GENERATION:rUNIQUE` request-ID
+  format is only revealed by the error (`9wkssd`); `status` after stop still
+  reads as a fault (`r23mma`); stream truncation keeps a 16 KiB inline preview
+  plus the artifact, which the guide does not say.
+
+Not covered: multi-client contention over hours, memory growth, GUI crash
+recovery, and a second session on the same binary.
