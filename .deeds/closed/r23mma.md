@@ -8,3 +8,5 @@ thing to fix. Report "no running session" with the state path (exit 0 or a
 distinct code), and reserve the logs pointer for a session that should be
 running. The same subjects wanted the `status` headline to count files, not
 views: one opened binary shows `2 views` because of the redundant Raw view.
+
+Closed: Status reports no running session with state path and exit 0 when the ownership lock is unheld, including after stop; a held lock with an unavailable endpoint remains a fault. Live status separately counts file IDs and views; smoke checks pass.

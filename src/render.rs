@@ -59,11 +59,11 @@ pub fn receipt(v: &Value, existing: bool, json_mode: bool, verbose: bool) -> Res
                 "Accepted"
             },
             v["queue_position"],
-            text(&v["target_snapshot"], "handle"),
+            v["target_snapshot"]["handle"].as_str().unwrap_or("none"),
             text(v, "waits_behind")
         );
     }
-    if verbose && !json_mode {
+    if verbose && !json_mode && !v["waits_behind"].is_null() {
         eprintln!("Admission: {}", serde_json::to_string_pretty(v)?);
     }
     io::stderr().flush()?;
@@ -77,7 +77,7 @@ fn target(v: &Value) -> String {
         format!("  target snapshot {handle}")
     }
 }
-pub fn row(v: &Value) -> String {
+fn request_head(v: &Value) -> String {
     let mut kind = text(v, "kind").to_string();
     if kind == "py" && !text(v, "filename").is_empty() {
         kind.push(' ');
@@ -88,13 +88,16 @@ pub fn row(v: &Value) -> String {
                 .to_string_lossy(),
         );
     }
-    let mut line = format!(
+    format!(
         "{} {}  {}{}",
         text(v, "id"),
         text(v, "status"),
         kind,
         target(v)
-    );
+    )
+}
+pub fn row(v: &Value) -> String {
+    let mut line = request_head(v);
     if v["status"] == "queued" {
         line.push_str(&format!(
             "  queued #{}  waiting {:.3}s",
@@ -218,8 +221,10 @@ pub fn render(
                 seconds(v, "elapsed_seconds")
             );
         } else {
-            if command == "request" || pending(v) {
+            if pending(v) {
                 println!("{}", row(v));
+            } else if command == "request" {
+                println!("{}  {:.3}s", request_head(v), seconds(v, "elapsed_seconds"));
             } else {
                 println!(
                     "{}{}  {:.3}s",
@@ -229,7 +234,7 @@ pub fn render(
                         "cancelled" => "Cancelled",
                         other => other,
                     },
-                    target(v),
+                    target(v).replace("target snapshot", "target"),
                     seconds(v, "elapsed_seconds")
                 );
             }
@@ -281,7 +286,7 @@ pub fn render(
                     println!("No open targets. Use binja open PATH.");
                 }
             }
-            "requests" => {
+            "requests" | "requests --all" => {
                 let rows = v["requests"].as_array().unwrap();
                 for r in rows {
                     println!("{}", row(r));
@@ -297,19 +302,27 @@ pub fn render(
                 }
                 if v["rejected_total"].as_u64().unwrap_or(0) > 0 {
                     let rejections = v["rejections"].as_array().unwrap();
-                    println!(
-                        "{} cap-rejected attempts; newest {}:",
-                        v["rejected_total"],
-                        rejections.len()
-                    );
-                    for r in rejections {
+                    if command == "requests" {
                         println!(
-                            "{} not accepted  {}  running {}  {} queued",
-                            text(r, "id"),
-                            text(r, "filename"),
-                            text(r, "running"),
-                            r["queued"]
+                            "{} cap-rejected attempts; use --all for the newest {} events.",
+                            v["rejected_total"],
+                            rejections.len()
                         );
+                    } else {
+                        println!(
+                            "{} cap-rejected attempts; newest {}:",
+                            v["rejected_total"],
+                            rejections.len()
+                        );
+                        for r in rejections {
+                            println!(
+                                "{} not accepted  {}  running {}  {} queued",
+                                text(r, "id"),
+                                text(r, "filename"),
+                                text(r, "running"),
+                                r["queued"]
+                            );
+                        }
                     }
                 }
             }

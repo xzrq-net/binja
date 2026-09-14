@@ -25,8 +25,9 @@ records experiments and their results.
 
 The client, plugin, and supervisor use JSON protocol version 3 over filesystem
 Unix `SOCK_SEQPACKET` sockets.
-The external CLI never imports `binaryninja`: source text, arguments, and serialized
-results cross the process boundary. Scripts run in the distribution's bundled
+The CLI and supervisor are one Rust binary; the supervisor runs as a hidden
+subcommand. The resident plugin and executed scripts remain Python inside Binary
+Ninja. Source text, arguments, and serialized results cross the process boundary. Scripts run in the distribution's bundled
 interpreter. There is no transfer of Python object proxies.
 
 Target enumeration and UI dispatch adapt code from banteg/bn, with its license
@@ -75,8 +76,10 @@ failure is distinct from normal wait expiry. Nonwaiting handlers retain short
 I/O timeouts. Supervisor control operations use the same framing and identity
 checks, but return a single `{protocol, generation, data|error}` envelope.
 
-Protocol upgrades require session restart. No compatibility Python client is
-maintained alongside the replacement Rust client.
+Protocol upgrades require session restart. The Rust client uses blocking sockets
+with receive deadlines; after admission it blocks on the result read without a
+first-poll sleep. Startup readiness polling is separate from execution waits.
+There is no Python client or supervisor entry point.
 
 ## Distribution and upgrades
 
@@ -86,9 +89,17 @@ data stay out of derivations; the paid runtime stays out of public caches.
 
 An FHS launcher preserves the immutable vendor tree, bundled Python, and Qt.
 Dependencies are declared in the package; the launcher removes ambient Python and
-library search paths and disables Python user-site loading. The CLI uses a separate
-Nix Python environment. Additional script dependencies belong in the package when
-a concrete workflow needs them.
+library search paths and disables Python user-site loading. The CLI is built with
+`rustPlatform.buildRustPackage` and `Cargo.lock`. Python is needed at build time
+for static API indexing and at runtime inside Binary Ninja; the CLI and supervisor
+do not require a separate Python environment. Additional script dependencies
+belong in the package when a concrete workflow needs them.
+
+The binary resolves plugin resources and build metadata from `../lib/binja`
+relative to its executable. Development builds fall back to the checkout's
+`binja/` directory; `BINJA_RESOURCE_DIR` explicitly overrides the resource path.
+Build metadata names the immutable vendor, FHS launcher, and labwc paths. The
+supervisor injects the selected plugin directory into the GUI's bundled Python.
 
 Upgrades change the archive pin and rebuild the CLI/plugin and matching API index
 together. Automatic update downloads and installation are disabled. Running
@@ -126,7 +137,13 @@ The supervisor sets `BN_USER_DIRECTORY`, XDG config/cache/data/runtime paths, an
 `TMPDIR` for children. It links a runtime license, loads the managed startup plugin,
 disables the welcome wizard and unrelated network startup work, and forces a fresh
 GUI process rather than forwarding to another instance. The supervisor retains
-child process objects for shutdown and cleanup.
+child process objects for shutdown and cleanup. Shutdown pins both RPC operations
+to the generation returned by the live supervisor handshake. A held flock is the
+ownership authority; no PID read from discovery metadata is used for termination.
+Owned process groups are terminated before artifacts and endpoints are retired.
+`status` reports no running session with exit 0 when the lock is unheld, without
+creating missing state. If a lock is held but the endpoint cannot answer, it
+reports a fault. Live status counts files by file ID, separately from views.
 
 This isolates application state, not filesystem access. Arbitrary Python runs
 with the user's access and can change process state. Its working directory is
@@ -223,7 +240,8 @@ cancellations. `elapsed_seconds` remains available with its previous semantics.
 Cap-rejected attempts are separate from accepted records. A lifetime total counts
 all cap rejections; a ring retains the newest 64 events, oldest first. Each event
 has `id`, `time`, `reason: "pending_cap"`, `kind`, `filename`, `running` (ID or
-`"none"`), `queued`, and `pending_cap`. Duplicate recovery at capacity neither
+`"none"`), `queued`, and `pending_cap`. Default human listings summarize the
+rejection count; `--all`, verbose, and JSON expose the retained events. Duplicate recovery at capacity neither
 executes again nor counts as rejection. Invalid input is not a cap event.
 
 Cancellation can stop queued work or a pre-script analysis wait. It cannot safely
@@ -252,7 +270,19 @@ declaration `kind`, properties' `writable` status and
 plus `value` when statically literal; unresolved expressions are not evaluated.
 Setter declarations are folded into their property rather than indexed as a
 second symbol. Static lookup requires no GUI, license, or Binary Ninja imports
-in the CLI. Inherited members and native UI classes may require direct documentation inspection.
+in the CLI. Inherited members and native UI classes may require direct
+documentation inspection.
+
+Default human output keeps outcomes, retained handles, payloads, failures, and
+recovery commands. Full paths appear for open/save outcomes and target listings;
+historical target snapshots do not masquerade as current state. Artifact-backed
+streams show paths and byte counts instead of inline previews. `--verbose`
+appends the full available record; `--json` returns that record directly and
+preserves flat submitting/accepted stderr events. Human admission receipts appear
+only with an unfinished predecessor. Successful cancellation exits 0; retrieving
+that cancelled request still exits 1. API show retains a source:line pointer,
+while version and docs paths are in verbose/JSON; search states shown/total counts
+and the limit needed to retrieve the rest.
 
 `--help` points to `binja skill`, which prints a single packaged guide. The guide
 teaches working commands, target selection, API lookup, readiness, saving, and

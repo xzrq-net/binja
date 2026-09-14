@@ -3,7 +3,8 @@
 `binja` is a CLI for agent-driven static analysis with Binary Ninja Personal.
 It manages a persistent GUI on a private Wayland compositor and runs Python
 against its open BinaryViews. It includes API lookup, recoverable requests,
-and explicit database saves.
+and explicit database saves. The client and session supervisor are one Rust
+binary; scripts and the resident plugin run in Binary Ninja's bundled Python.
 
 ## Install
 
@@ -39,6 +40,9 @@ working directory across calls, or pass `--state-dir PATH` on each command.
 Reopen `analysis.bndb` after starting a new session to continue saved work.
 `binja skill` prints the full workflow, including multiple targets, API lookup,
 and recovery after a client timeout. It works without a session or license.
+Human output is concise; `--verbose` includes the full record and `--json` returns
+it directly. Artifact files survive until session shutdown or a new lifetime starts.
+Copy results you need to keep before stopping.
 
 ## Development
 
@@ -47,11 +51,30 @@ Build and run the live checks from the checkout:
 ```sh
 nix build
 python3 tests/smoke.py --binja ./result/bin/binja --sample /path/to/small/ELF
+python3 tests/bridge.py --package "$(readlink -f result)" --sample /path/to/small/ELF
 ```
 
 The checks require a Personal license. They copy the sample into a temporary
 workspace, analyze it without executing it, and verify targeting, request recovery,
 save/reopen, and shutdown behavior.
+
+`nix develop` provides cargo, rustc, Python for checks, and the packaged CLI.
+Dependencies are locked in `Cargo.lock`; Nix consumes it directly. To run the
+Rust client with the checkout's plugin and guide during development:
+
+```sh
+nix build
+cp result/lib/binja/{build.json,api-index.json} binja/
+cargo run -- --help
+cargo run -- api show Function.name
+```
+
+Those generated files are ignored by version control. Refresh them after package
+changes. Installed binaries locate resources relative to themselves; development
+builds use `binja/` in the source checkout. `BINJA_RESOURCE_DIR` can select another
+resource directory explicitly. Restart sessions after changing the plugin.
+`cargo test` checks the Rust transport; `tests/protocol.py`, `tests/execution.py`,
+and `tests/api_index.py` check Python helpers without a GUI.
 
 See [the design](docs/design.md) for architecture and interface constraints.
 `deeds ready` lists pending work; [the investigation log](docs/log.md) records

@@ -240,7 +240,7 @@ fn run(cli: &Cli) -> Result<i32> {
         ),
         Commands::Requests { all } => (
             wire::rpc(&state, "requests", json!({"all":all}), false, 5.)?,
-            "requests",
+            if *all { "requests --all" } else { "requests" },
             false,
         ),
         Commands::Request { id, wait } => (

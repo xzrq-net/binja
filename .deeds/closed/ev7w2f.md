@@ -19,3 +19,5 @@ and execution_seconds (worker occupancy including readiness; null before
 pickup). Rejected attempts remain outside accepted records. Live checks cover
 cap rejection and a history export above 128 KiB. Rust rendering/JSON and smoke
 migration remain in B.
+
+Closed: Rust renders the forensic envelope, explicit queue/worker timings, errors, pruning, kind/filename, totals, and separate cap-rejection history. Default human output summarizes rejections; --all prints retained events. Full JSON export above 4096 rows passes live.

@@ -186,6 +186,9 @@ result = bv.file.filename
         assert [r["finished"] for r in listing[8:]] == sorted((r["finished"] for r in listing[8:]), reverse=True)
         human_listing = subprocess.check_output([binary, "requests"], cwd=workspace, env=env, text=True)
         assert human_listing.splitlines()[0].startswith(slow["id"])
+        assert "2 cap-rejected attempts" in human_listing and rejected_id not in human_listing
+        human_full = subprocess.check_output([binary, "requests", "--all"], cwd=workspace, env=env, text=True)
+        assert rejected_id in human_full and "not accepted" in human_full
         assert "executing " in human_listing and "waiting " in human_listing and a in human_listing
         full_envelope = cli("requests", "--all")
         full = full_envelope["requests"]
@@ -231,6 +234,9 @@ result = bv.file.filename
         human = subprocess.run([binary, "py", "--target", a, "-c", "result=42"], cwd=workspace, env=env, text=True, capture_output=True, check=True)
         assert len(human.stderr.splitlines()) == 1 and human.stderr.startswith("Request ")
         assert "Completed" in human.stdout and "42" in human.stdout
+        verbose_submit = subprocess.run([binary, "py", "--target", a, "-c", "result=42", "--verbose"], cwd=workspace, env=env, text=True, capture_output=True, check=True)
+        assert len(verbose_submit.stderr.splitlines()) == 1
+        assert "Record:" in verbose_submit.stdout
         verbose = subprocess.check_output([binary, "request", output["id"], "--verbose"], cwd=workspace, env=env, text=True)
         full_record = json.loads(verbose.split("Record:\n", 1)[1])
         assert full_record == cli("request", output["id"])
@@ -238,6 +244,13 @@ result = bv.file.filename
         assert large["stdout"]["truncated"] and Path(large["stdout"]["artifact"]).stat().st_size == 1024 * 1024
         assert len(json.loads(Path(large["result_artifact"]).read_text())) == 10000
         assert "not JSON serializable" in py("result = bv", a, code=1)["error"]
+        large_script = workspace / "large_script.py"
+        large_script.write_text("# padding\n" * 100000 + "result=42\n")
+        assert cli("py", "--target", a, "--file", large_script)["result"] == 42
+        assert cli("py", "--target", a, stdin=large_script.read_text())["result"] == 42
+        artifact_human = subprocess.check_output([binary, "request", large["id"]], cwd=workspace, env=env, text=True)
+        assert large["stdout"]["artifact"] in artifact_human and "1048576 bytes" in artifact_human
+        assert "x" * 100 not in artifact_human and "truncated" in artifact_human
 
         phase("Disconnect before acknowledgement, recovery, and deduplication")
         request_id = session["generation"] + ":rdisconnect"
@@ -349,6 +362,9 @@ with bridge.execution.lock:
         cli("save", database, "--target", reopened_again)
         assert py("result = 0", reopened_again, request_id=old["id"]) == retained_old
         assert cli("request", restarted["generation"] + ":rhistory4095")["status"] == "completed"
+        exported = cli("requests", "--all")
+        assert len(exported["requests"]) >= 4096
+        assert exported["finished_total"] == exported["finished_shown"]
 
         phase("Live ownership verification rejects stale metadata")
         metadata_path = state / "runtime/instance.json"

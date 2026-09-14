@@ -16,3 +16,5 @@ server-side deadline (condition variable under the existing lock), and have the
 client long-poll instead of sleeping. A cheaper stopgap is a short first poll
 with backoff (5, 10, 20, 50, 200 ms). Measure the tight loop from
 `temp/trials/runD/scripts/` before and after.
+
+Closed: Removed client polling from execution waits. Same-sample 100-call loop fell from 24.235 s to 0.163 s; median client wall time 243.0 ms to 1.49 ms.

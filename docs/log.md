@@ -707,3 +707,74 @@ Where the tool limited the analysis, in the subject's ranking and ours:
 
 Not covered: multi-client contention over hours, memory growth, GUI crash
 recovery, and a second session on the same binary.
+
+## 2026-09-13 — Rust client and supervisor with the usability changes
+
+Replaced the Python CLI and supervisor with one Rust binary, including a hidden
+supervisor subcommand. The resident plugin and command scripts remain Python;
+the static Python API builder runs during packaging. Nix uses
+`rustPlatform.buildRustPackage` with `Cargo.lock`, and the devshell includes
+cargo/rustc. Installed resources are relative to the binary; development builds
+can use the checkout's plugin directory and copied build metadata.
+
+The client uses clap, serde_json with arbitrary integer precision, and blocking
+SEQPACKET sockets with read deadlines. It consumes protocol-3 admission and final
+replies without a first-poll sleep. The supervisor retains flock authority,
+retained child processes, process-group shutdown, and owner-only endpoint cleanup.
+Both shutdown calls pin the generation returned by the live owner handshake.
+
+The rewrite includes concise human outcomes, queued-only acceptance receipts,
+full verbose/JSON records, artifact paths instead of duplicated stream previews,
+successful cancellation exit 0, custom ID construction guidance, stopped-session
+status, file/view counts, forensic history/rejection rendering, and API property
+writability/enum members. API show keeps a source:line pointer; search states its
+shown/total count. Default request listings summarize cap rejections by count;
+`--all` prints retained events, while verbose/JSON keep the full envelope.
+Artifact files and references survive inline pruning until lifetime cleanup.
+
+The adapted runD 100-call tight loop used the same copied sample (SHA-256
+`aaae63bd63899939214f8b362be589a77e1df1de8db48688d9966a9895cba2a4`)
+and workload, `result={"i":N,"count":len(bv.functions)}`. Each call launches the
+installed CLI in a disposable external workspace. The controlled Rust measurement
+ran after builds had finished; an earlier run overlapping a build was excluded.
+
+| Measure | Python baseline | Rust |
+| --- | --- | --- |
+| 100-call wall time | 24.234950 s | 0.162663 s |
+| Median CLI wall time | 243.035 ms | 1.491 ms |
+| Median worker time | 0.737 ms | 0.319 ms |
+
+The loop was about 149 times faster overall. The plugin is still Python; the
+worker-time difference is not evidence of a language speedup there. Harness and
+raw baseline/Rust results are in `temp/phase-a/`; the excluded run and supplementary
+evidence are in `temp/phase-b/`.
+
+A separate human-output comparison used the same small query. Combined stdout
+and stderr shrank from 456 to 109 bytes. Using `o200k_base` as a tokenizer proxy,
+not a claim about the trial model's tokenizer, that was 187 to 55 tokens; API
+show Function.name was 128 to 64, open 161 to 57, and save 198 to 57. Stop grew
+from 16 to 22 tokens because it now identifies the state path. Raw command
+outputs and counts are under `temp/phase-b/`.
+
+Verification: Nix builds and the two Rust transport tests passed, as did nine
+Python protocol/execution/index tests. The installed smoke suite passed from
+`/tmp/binja-smoke-9gq196p0`; the live bridge suite passed from
+`/tmp/binja-protocol-c0xbdb2p`. Development resource lookup, API show, and a live
+start/py/stop were also checked through the debug binary with checkout resources.
+The requested intermediate code commit was made after the first green smoke run,
+before documentation and deed closure.
+
+Smoke assertions changed for the protocol-3 raw disconnect probe, the forensic
+listing envelope/counts, cancellation command exit 0 (retrieval remains exit 1),
+retained artifact files/references instead of deletion, and lean human strings
+without repeated IDs or snapshot metadata. The original targeting, mutation,
+readiness, failure, deduplication, persistence, stale-generation, and unchanged-input
+checks remain. Added checks cover stopped status, file/view counts, API metadata
+and source pointers, search truncation, idle receipt silence including verbose,
+full verbose records, integers beyond 64 bits, large file/stdin sources,
+artifact-only human stream rendering, and a full history above 4096 rows.
+
+Not verified: a complete replay of runD's stress workload, hours-long contention
+or memory growth, supervisor/GUI crash recovery, or forced-kill escalation against
+a deliberately unresponsive native child. Guide recipe validation (rcxvky) and
+the bounded adversarial implementation review remain phase C work. No review or usability subagents ran in this phase.

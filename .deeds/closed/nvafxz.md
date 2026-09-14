@@ -16,3 +16,5 @@ types, and enum members with literal values or unresolved source expressions.
 Verified the packaged Function.name/comment/hlil and SymbolType entries. Rust
 show/search rendering remains in B: default show retains one source:line
 pointer; docs URL and version move to verbose.
+
+Closed: Packaged index and Rust API show/search expose property writability and enum members, keep a default source:line pointer, and state search truncation with --limit guidance. Offline and installed smoke checks pass.

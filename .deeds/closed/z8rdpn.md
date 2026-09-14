@@ -39,3 +39,5 @@ compatibility work was done. Rust CLI and hidden supervisor,
 packaging/devshell, live CLI smoke, and benchmark comparison remain in B.
 Baseline harness and raw results are under temp/phase-a/; reuse tight_loop.py
 with the same sample for comparison.
+
+Closed: Shipped the Rust CLI and hidden supervisor over protocol 3 with blocking result reads; Nix/Cargo.lock packaging, live smoke and bridge checks pass. Measured 100 calls at 0.163 s versus 24.235 s; docs/log.md records evidence and limits.
