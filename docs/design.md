@@ -105,8 +105,21 @@ supervisor injects the selected plugin directory into the GUI's bundled Python.
 
 Upgrades change the archive pin and rebuild the CLI/plugin and matching API index
 together. Automatic update downloads and installation are disabled. Running
-sessions must be restarted after package upgrades. Optional update notices are
-tracked in deeds.
+sessions must be restarted after package upgrades. Start and running-session status
+include a stable-release notice from `cache/updates.json`: installed version,
+channel, latest stable version, available/current/unknown status, check and expiry
+times (Unix seconds), error, and a derived stale flag. Successful checks are reused
+for 24 hours; errors for one hour. A session attempts at most one check on startup
+when its cache is missing, expired, or for a different installed version. Status
+only reads the cache, including when GUI RPC is unavailable.
+
+The receiver queries native `UpdateChannel["release-personal"].latest_version_num`
+on a separate daemon thread with automatic updates disabled; the `network.enable*`
+settings remain disabled independently. The notice becomes unknown after five
+seconds. The native API has no cancellation argument: its outstanding call may
+finish later, but cannot publish a late result or trigger another check in that
+session. No download/install API is used, and pending installation is not treated
+as release availability.
 
 ## State and session lifecycle
 
@@ -246,12 +259,12 @@ returned/total counts and next offset. Empty totals print `0 rows`; an offset
 beyond a nonempty list reports its position and total. Linear pages continue by address and
 remaining count/end. Pagination rerenders the current view, with no stored
 cursors; edits or reanalysis require restarting pagination. Inspection rows carry
-native hexadecimal `address` and `text`, plus nullable `il_index` for IL or `bytes` for
-disassembly. Blank-row addresses are null. Pseudo C/HLIL addresses are identified
-as anchors, not individual machine instruction addresses. `result` also contains
-target/function identity, representation and page/extent metadata. Read commands
-can reuse this contract with their own row fields; byte spilling does not replace
-semantic scoping.
+native hexadecimal `address` and `text`, plus nullable `il_index` for IL or `bytes`
+for disassembly. Blank rows have null address and IL index. Pseudo C/HLIL addresses
+are identified as anchors, not individual machine instruction addresses. `result`
+also contains target/function identity, representation and page/extent metadata.
+Read commands can reuse this contract with their own row fields; byte spilling
+does not replace semantic scoping.
 
 `xrefs` resolves an exact function name to its start, or uses the exact ADDRESS;
 interior addresses stay interior. It lists inbound references with rows

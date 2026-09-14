@@ -28,6 +28,9 @@ including after a clean stop, `status` reports the path and exits 0.
 backend. The default license is `~/.binaryninja/license.dat`; `start --license PATH`
 selects another. Restart sessions after upgrading the package. Logs are in the
 session's `logs/` directory. Keep session state out of version control.
+Relay an available stable-update notice from `start` or `status` to the user,
+including the installed and latest known versions and whether the cache is stale;
+upgrading requires a package rebuild, and an unknown check does not mean current.
 
 `open` accepts a binary or existing BNDB. Save at meaningful work boundaries and
 before stopping. `save PATH.bndb` requires a destination outside session state;

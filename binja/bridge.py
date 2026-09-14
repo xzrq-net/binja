@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QApplication
 from .common import Error, PROTOCOL, build_config, receive, send
 from .targets import Targets, on_ui
 from .execution import Execution
+from . import updates
 
 
 class Bridge:
@@ -128,5 +129,6 @@ def start():
         bn.update.set_auto_updates_enabled(False)
         bridge = Bridge()
         threading.Thread(target=bridge.serve, name="binja-rpc", daemon=True).start()
+        updates.start(bridge.state, bn)
     except Exception:
         bn.log_error(traceback.format_exc())

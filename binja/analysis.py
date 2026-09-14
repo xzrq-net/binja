@@ -97,9 +97,12 @@ def rendered_rows(function, view, ssa=False):
         for line in cursor.lines:
             contents = line.contents
             text = str(contents)
-            row = dict(address=hex(contents.address) if text.strip() else None, text=text)
+            # Blank separator rows are structural: no address and no IL index,
+            # even when the renderer attaches a neighboring instruction to them.
+            blank = not text.strip()
+            row = dict(address=None if blank else hex(contents.address), text=text)
             if view in ("hlil", "mlil", "llil"):
-                instruction = contents.il_instruction
+                instruction = None if blank else contents.il_instruction
                 row["il_index"] = instruction.instr_index if instruction is not None else None
             if view == "disasm":
                 is_instruction = any(t.type == bn.InstructionTextTokenType.InstructionToken for t in contents.tokens)

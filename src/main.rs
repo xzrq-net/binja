@@ -3,6 +3,7 @@ mod display;
 mod render;
 mod resources;
 mod session;
+mod updates;
 mod wire;
 
 use anyhow::{Context, Result, ensure};

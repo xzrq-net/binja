@@ -1149,3 +1149,61 @@ substring/regex filtering, invalid patterns and flag conflicts; pagination,
 no-wait recovery and human output. Existing screenshot/input, reference,
 inspection, transport and save/reopen checks passed. Verification covered
 x86-64 ELF binaries. Stopped the checkout GUI cleanly. No follow-ups were needed.
+
+## 2026-09-13 — Cached stable update notices (t7h2fr)
+
+Probed the pinned Personal 6.0.10601 distribution through its managed GUI with
+`set_auto_updates_enabled(False)` and both `network.enableUpdates` and
+`network.enableUpdateChannelList` still false. Those settings suppress automatic
+checks; explicit native channel queries nevertheless contact the network.
+Scratch scripts, syscall traces, and the final smoke transcript are under
+`temp/update-probe/`; disposable probe states used `/tmp/binja-update-*`.
+
+| API | Observed behavior |
+| --- | --- |
+| `UpdateChannel[...]` / enumeration | Cold metadata lookup made DNS and HTTPS requests in about 1.03 s. Repeated enumeration used the process cache in under 0.1 ms. The stable channel is `release-personal`, not `Stable`. |
+| `latest_version_num` | Reads the channel object's Python field; no additional native/network call. |
+| `latest_version` / `versions` | Native channel-version lookup; warm reads took about 0.1 ms. A cold lookup attempted the network and failed after 10.003 s against a proxy that never replied. |
+| `updates_available` | Repeated calls made HTTPS requests even with channel metadata cached, took 1.6–3.2 s, and rewrote the updater preference manifest under `bn/update/`. Kept out of the implementation. |
+| `get_time_since_last_update_check` | Local preference read, returning elapsed seconds since `last_check`; with `last_check=0`, returned roughly the current Unix time. Explicit metadata and availability calls did not advance that field. It is not the notice's check timestamp. |
+| `is_update_installation_pending` | Local preference read; false throughout. Describes a downloaded installation, not a release notice. Kept out of availability decisions. |
+
+The real stable metadata was `6.0.10601 personal`, matching the installation.
+The same native response included historical `5.3.9757 personal`; tests model
+that older installation for the available case. No future release was invented
+and no download/install API was called. A trace of the production startup query
+showed no file writes by its query thread and zero write opens in the immutable
+vendor directory. Startup's existing auto-update disable call writes a 74-byte
+preference manifest (`auto=false`, `last_check=0`, `pending=false`); the metadata
+query left it unchanged. `nix-store --verify-path` confirmed the vendor contents.
+
+Implemented a notice in `cache/updates.json`, read by the supervisor so it also
+survives unavailable GUI RPC. Start and running-session status expose the installed
+and latest stable versions, channel, available/current/unknown result, check and
+expiry times, error, and derived stale flag. Successful results last 24 hours;
+errors last one hour. A new session checks once if that cache is absent, expired,
+or belongs to a different installation. Status and reused starts never initiate
+a network query. Version comparison uses numeric components of the stable
+version; unsupported version text remains unknown.
+
+Checks run outside the UI and serialized analysis worker. A five-second notice
+deadline records unknown and discards any eventual result. This bounds reporting,
+not native cancellation: the API exposes no cancellation argument, so its single
+daemon query can remain outstanding until the native transport returns (10 s in
+the stalled-proxy experiment) or the GUI exits. It cannot spawn retries or publish
+a late result. No extra runtime process, dependency, or substitute updater was
+introduced. A real two-byte x86 function completed analysis in 0.197 s while a
+native metadata query was stalled; the smoke suite now exercises that sequence.
+
+Unit tests cover cached available/current/unknown, expiry, changed installation,
+malformed data, the auto-update guard, unrecognized versions, and late-result
+rejection. `nix build` and the full installed smoke suite passed, including the
+stalled-proxy timeout, concurrent native analysis, reused start, stale/corrupt
+caches, cache persistence across restart, and the notice with every GUI thread
+stopped by SIGSTOP.
+
+The first full smoke run exposed a typed-IL inconsistency on the NixOS coreutils
+multicall ELF (`/run/current-system/sw/bin/true`): a blank HLIL separator row
+carried the IL index of a neighboring instruction while its address was null, so
+the smoke test's index-to-address map lost a real address. Blank rows now carry
+neither address nor IL index, and the smoke test asserts that pairing.

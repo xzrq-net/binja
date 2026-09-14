@@ -480,6 +480,23 @@ pub fn render(
             _ => println!("{}", serde_json::to_string_pretty(v)?),
         }
     }
+    if matches!(command, "start" | "status") && v["updates"].is_object() {
+        let notice = &v["updates"];
+        let line = match text(notice, "status") {
+            "available" => format!(
+                "Updates: stable {} available (installed {}); upgrade the Nix package to install",
+                text(notice, "latest_stable"),
+                text(notice, "installed")
+            ),
+            "current" => format!(
+                "Updates: no newer stable release at last check ({})",
+                text(notice, "latest_stable")
+            ),
+            _ => format!("Updates: unknown; {}", text(notice, "error").replace('\n', " ")),
+        };
+        let stale = if notice["stale"] == true { "; stale cache" } else { "" };
+        println!("{line}{stale}");
+    }
     if verbose {
         println!("Record:\n{}", serde_json::to_string_pretty(v)?);
     }

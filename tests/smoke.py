@@ -175,9 +175,16 @@ def main():
 
         phase("Private session ownership and target inference")
         phase("Concurrent and late starts share initialization")
+        # A proxy that accepts TCP but never answers makes the native metadata
+        # request stall deterministically, without relying on Internet access.
+        update_proxy = socket.socket()
+        update_proxy.bind(("127.0.0.1", 0))
+        update_proxy.listen(4)
+        proxy_url = f"http://127.0.0.1:{update_proxy.getsockname()[1]}"
+        start_env = dict(env, https_proxy=proxy_url, HTTPS_PROXY=proxy_url, no_proxy="", NO_PROXY="")
         started = True
         starts = [subprocess.Popen([binary, "--json", "start", "--license", str(options.license)],
-            cwd=workspace, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            cwd=workspace, env=start_env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             for _ in range(8)]
         deadline = time.monotonic() + 20
         while not (state / "runtime/control.sock").exists():
@@ -201,6 +208,64 @@ def main():
         assert py("import os; result = os.getcwd()", no_target=True)["result"] == str(workspace)
         assert cli("start")["generation"] == session["generation"]
         assert cli("targets") == []
+
+        phase("Bounded offline update notice while analysis remains usable")
+        update_proxy.settimeout(2)
+        update_connection, _ = update_proxy.accept()
+        updater_files = {p: p.read_bytes() for p in (state / "bn/update").rglob("*") if p.is_file()}
+        try:
+            before = time.monotonic()
+            analysis = py('''import threading
+view = bn.BinaryView.new(b"\\x90\\xc3")
+try:
+    view.platform = bn.Platform["linux-x86_64"]
+    view.add_function(0)
+    view.update_analysis_and_wait()
+    result = dict(functions=len(view.functions), threads=[t.name for t in threading.enumerate()])
+finally:
+    view.file.close()
+''', no_target=True)
+            assert time.monotonic() - before < 2
+            assert analysis["result"]["functions"] == 1
+            assert "binja-update-query" in analysis["result"]["threads"]
+            deadline = time.monotonic() + 6
+            while True:
+                notice = cli("status")["updates"]
+                if notice["checked_at"] is not None:
+                    break
+                assert time.monotonic() < deadline, "Update notice did not time out"
+                time.sleep(.05)
+            assert notice["status"] == "unknown" and notice["latest_stable"] is None
+            assert "timed out after 5s" in notice["error"], notice
+            assert notice["installed"] == session["version"].split()[0]
+            assert notice["channel"] == "release-personal" and not notice["stale"]
+            assert py("result = 6 * 7", no_target=True)["result"] == 42
+        finally:
+            update_connection.close()
+            update_proxy.close()
+        # set_auto_updates_enabled(False) persists the updater preferences.
+        # The metadata query must leave those files alone and create no payload.
+        assert {p: p.read_bytes() for p in (state / "bn/update").rglob("*") if p.is_file()} == updater_files
+        update_cache = state / "cache/updates.json"
+        original_notice = update_cache.read_text()
+        assert cli("start")["updates"] == notice
+        assert "Updates: unknown" in subprocess.check_output([binary, "status"], cwd=workspace, env=env, text=True)
+        # A real stable release observed in native metadata; current/available
+        # comparisons against an older installation are also covered offline.
+        current = dict(notice, status="current", latest_stable="6.0.10601 personal", error=None)
+        try:
+            update_cache.write_text(json.dumps(current))
+            assert cli("status")["updates"]["status"] == "current"
+            assert "no newer stable release at last check" in subprocess.check_output(
+                [binary, "start"], cwd=workspace, env=env, text=True)
+            current["expires_at"] = 0
+            update_cache.write_text(json.dumps(current))
+            assert cli("status")["updates"]["stale"] is True
+            assert "stale cache" in subprocess.check_output([binary, "status"], cwd=workspace, env=env, text=True)
+            update_cache.write_text("broken json")
+            assert cli("status")["updates"]["status"] == "unknown"
+        finally:
+            update_cache.write_text(original_notice)
 
         phase("Stuck UI status, compositor capture, and modal dismissal")
         ui_blocked, ui_release = workspace / "ui-blocked", workspace / "ui-release"
@@ -260,6 +325,7 @@ result = on_ui(modal)
             frozen = cli("status")
             assert time.monotonic() - before < 3
             assert frozen["running"] and frozen["modal_open"] is None and frozen["requests"] is None
+            assert frozen["updates"] == notice
             frozen_path = workspace / "frozen modal.png"
             screenshot = subprocess.check_output([binary, "screenshot", frozen_path.name],
                 cwd=workspace, env=env, text=True, timeout=5).strip()
@@ -344,6 +410,7 @@ result = [str(line) for line in f.pseudo_c.get_linear_lines(f.hlil.root, s)]
                 record = payload(cli("il", start, "--target", a, "--view", view, *flags))
                 assert record["ssa"] == ssa
                 indexes = {row["il_index"]: row["address"] for row in record["rows"] if row["il_index"] is not None}
+                assert all(row["address"] is not None for row in record["rows"] if row["il_index"] is not None)
                 assert indexes and all(set(row) == {"address", "text", "il_index"} for row in record["rows"])
                 py(f"""f = bv.get_function_at({start})
 il = f.{view}{'.ssa_form' if ssa else ''}
@@ -769,6 +836,8 @@ for symbol, row in zip(symbols, args):
         restarted = cli("start", "--license", options.license)
         started = True
         assert restarted["generation"] != session["generation"]
+        assert restarted["updates"] == notice
+        assert update_cache.read_text() == original_notice
         reopened = cli("open", database)["result"]["handle"]
         assert py("result = bv.get_comment_at(bv.entry_point)", reopened)["result"] == "persisted annotation"
         assert "No live target" in py("result = 0", a, code=1)["error"]

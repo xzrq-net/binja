@@ -174,6 +174,7 @@ pub fn status(state: &Path) -> Result<Value> {
         return Ok(json!({"running":false,"state_dir":state}));
     }
     let owner = wire::rpc(state, "status", json!({}), true, 5.)?;
+    let updates = owner["updates"].clone();
     let mut value = match wire::rpc(
         state,
         "status",
@@ -192,6 +193,7 @@ pub fn status(state: &Path) -> Result<Value> {
         }
     };
     value["running"] = json!(true);
+    value["updates"] = updates;
     let Some(targets) = value["targets"].as_array() else {
         value["file_count"] = Value::Null;
         value["view_count"] = Value::Null;
@@ -546,7 +548,14 @@ pub fn serve(state: &Path, license: &Path, resources: &Resources) -> Result<()> 
                     stopping.store(true, Ordering::Relaxed);
                     metadata.clone()
                 }
-                Some("status") => metadata.clone(),
+                Some("status") => {
+                    let mut value = metadata.clone();
+                    value["updates"] = crate::updates::status(
+                        state,
+                        config["version"].as_str().context("Binary Ninja version")?,
+                    );
+                    value
+                }
                 _ => bail!("Unknown supervisor operation."),
             };
             value["generation"] = json!(generation);
