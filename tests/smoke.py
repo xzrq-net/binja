@@ -99,6 +99,24 @@ def main():
         assert cli("status") == {"running": False, "state_dir": str(state)}
         assert not state.exists()
 
+        phase("Failed supervisor returns after the competing-winner grace")
+        blocker = state / "bn/plugins/block-start"
+        blocker.parent.mkdir(parents=True)
+        blocker.write_text("Deliberately prevent supervisor initialization")
+        before = time.monotonic()
+        failed_start = subprocess.run([binary, "--json", "start", "--license", str(options.license)],
+            cwd=workspace, env=env, text=True, capture_output=True, timeout=8)
+        latency = time.monotonic() - before
+        assert failed_start.returncode == 1, (failed_start.stdout, failed_start.stderr)
+        error = json.loads(failed_start.stdout)["error"]
+        assert "Session startup exited (exit status: 1)" in error, error
+        assert str(state / "logs") in error and "Startup wait timed out" not in error
+        assert "Managed plugin directory must be empty" in (state / "logs/supervisor.log").read_text()
+        assert latency < 8, latency
+        phase(f"Failed supervisor latency: {latency:.3f}s")
+        blocker.unlink()
+        assert cli("status")["running"] is False
+
         phase("Private session ownership and target inference")
         phase("Concurrent and late starts share initialization")
         started = True

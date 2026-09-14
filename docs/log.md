@@ -846,3 +846,14 @@ open follow-ups. This check did not exercise uninterruptible kernel waits,
 descendants deliberately escaping their owned process group, or the other
 long-duration/stress limitations recorded above. Parent-death signaling covers
 the direct children; it is not a general descendant containment mechanism.
+
+### Failed-supervisor startup grace
+
+Bound the competing-winner wait to five seconds after observing our own spawned
+supervisor's exit, while retaining RPC-only readiness polling. If no receiver
+answers, start reports the child's exit status and the session logs path instead
+of exhausting the 70-second startup deadline. The new smoke case blocks startup
+with a file in bn/plugins and requires failure within eight seconds; measured
+latency was 5.203 seconds. Nix build, all five Rust tests, and the full installed
+live smoke suite passed, including concurrent/late starts. External workspace:
+`/tmp/binja-smoke-4hijreua`; transcript: `temp/start-grace/smoke.txt`.

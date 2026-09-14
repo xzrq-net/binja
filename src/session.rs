@@ -214,7 +214,8 @@ pub fn start(state: &Path, license: Option<&Path>, resources: &Resources) -> Res
         detached(&mut command);
         process = Some(command.spawn().context("Start session supervisor")?);
     }
-    let deadline = Instant::now() + Duration::from_secs(70);
+    let mut deadline = Instant::now() + Duration::from_secs(70);
+    let mut exited = None;
     let mut last_error = String::from("receiver has not started");
     while Instant::now() < deadline {
         // A competing supervisor may win the flock after our preliminary check.
@@ -223,6 +224,12 @@ pub fn start(state: &Path, license: Option<&Path>, resources: &Resources) -> Res
             Some(child) => child.try_wait()?,
             None => None,
         };
+        if exit.is_some() && exited.is_none() {
+            exited = exit;
+            // A loser may exit before the winner's receiver is ready, but an
+            // unsuccessful launch should not consume the full startup timeout.
+            deadline = deadline.min(Instant::now() + Duration::from_secs(5));
+        }
         // Do not probe flock while supervisors are competing to acquire it:
         // a transient status lock could itself make a supervisor lose.
         match wire::rpc(state, "status", json!({}), false, 1.) {
@@ -250,6 +257,12 @@ pub fn start(state: &Path, license: Option<&Path>, resources: &Resources) -> Res
             }
         }
         sleep(Duration::from_millis(200));
+    }
+    if let Some(exit) = exited {
+        bail!(
+            "Session startup exited ({exit}); inspect {}/logs.",
+            state.display()
+        );
     }
     bail!("Startup wait timed out: {last_error}; use status or stop --force to recover.")
 }
