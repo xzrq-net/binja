@@ -97,7 +97,8 @@ and imports and database edits persist between requests while variables do not.
 Keep analysis work on the worker; use `on_ui` only for GUI calls.
 
 Target-bound commands wait for analysis to complete before running.
-`--allow-incomplete` skips the wait. Analysis on hold is an error that prints
+`--allow-incomplete` skips the wait but still queues behind earlier requests on
+the same file. Analysis on hold is an error that prints
 the resume command for that target. A script that edits and then reads
 dependent results needs `bv.update_analysis_and_wait()` between the two. Raw
 views have no analysis.
@@ -240,25 +241,15 @@ binja request REQUEST_ID --wait 30
 binja cancel QUEUED_REQUEST_ID
 ```
 
-Requests on the same file run in submission order, including through different
-view handles. Analysis waits release the executor so requests on other files
-can proceed; untargeted scripts share their own queue and are not a barrier.
-Python still executes one request at a time, so batch per-function work into
-one script. `--allow-incomplete` does not jump earlier requests on the same file.
-Queue positions and predecessors refer to that file's queue (or the untargeted
-queue). At most 8 requests can be unfinished, including analysis waits; a
-rejected submission never executes, and `request` on its ID says so until the
-rejection ages out of the newest 64. `cancel` works on queued requests and
-readiness waits, including `open` after loading. Cancelling that wait leaves the
-file open; recover its handle from the request's target snapshot. Running Python
-or native work cannot be interrupted.
-
-`queue_wait_seconds` grows until the executor first probes the request for
-readiness (`started`), even at the front of a file's queue. After that pickup,
-`execution_seconds` includes readiness and any later wait for the executor;
-parking does not restart the clock. `elapsed_seconds` shows queue time before
-pickup and execution time afterward. Cancellation before pickup leaves
-`execution_seconds` null.
+Requests on the same file run in submission order, whichever of its views they
+target; a file still analyzing does not block requests on other files. Queue
+positions in receipts are per file. Python still executes one request at a
+time, so batch per-function work into one script. At most 8 requests can be
+unfinished at once; a rejected submission never executes, and `request` on its
+ID says so until the rejection ages out of the newest 64. `cancel` works on
+queued requests and analysis waits, including an `open` that has already
+loaded its file, which then stays open under the handle in the request's
+target snapshot. Running Python or native work cannot be interrupted.
 
 After a read timeout or disconnect, inspect the printed ID. An unknown ID does
 not prove the script never ran. Recover with `request ID` or by resubmitting
