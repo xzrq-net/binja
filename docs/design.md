@@ -183,7 +183,7 @@ managed state. A restart retires request artifacts and does not restore views or
 unsaved analysis.
 
 `close HANDLE|PATH [--force]` retires the selected view and all other views of
-its file. It retains the selection at admission, refuses queued/running requests
+its file. It retains the selection at admission, refuses queued, running, or parked requests
 for any sibling view, and prevents new target requests while close is pending.
 `--force` permits discarding unsaved changes; it never overrides pending work.
 The packaged close script runs on the existing worker and closes GUI tabs on the
@@ -333,15 +333,36 @@ separately. A universal address schema is unnecessary.
 
 ## Execution and recovery
 
-The plugin serializes scripts on one worker. Admission is capped at 8 unfinished
-requests, including the active request. Rejection occurs before recording the ID
-and explicitly guarantees no execution, so that rejected submission can be retried.
-Duplicate accepted IDs still return their existing record even at capacity.
-Receipts expose queue position, immediate unfinished predecessor, and retained
-target snapshot. Queue observations are captured under the scheduling lock.
-UI calls run on the main thread via
-`on_ui`; analysis waits stay on the worker. Status and request inspection remain
-available during execution, subject to the GUI being responsive.
+The plugin executes submitted scripts one at a time on one executor thread.
+Requests sharing a file (`target_snapshot.file_id`, Binary Ninja's
+`bv.file.session_id`) run in submission order, including requests targeting
+different views of that file. Untargeted requests share a session lane; they
+are not a barrier for file lanes. The executor chooses the earliest-submitted
+lane head whose readiness is satisfied. A head on analysis hold runs and fails
+with the resume error. `--allow-incomplete` does not bypass an earlier request
+in the same lane.
+
+Readiness waits park with status `waiting_analysis`, releasing the executor for
+other lanes. The executor polls readiness every 100 ms when no head can run;
+UI calls use `on_ui` without holding the scheduling lock. Handles are revalidated
+while parked and immediately before execution. Submitted Python and its native
+calls still occupy the executor until they return, including any waits the
+script performs itself. Status and request inspection remain available during
+execution, subject to the GUI being responsive.
+
+`open` first loads and attaches a view, starts analysis, and records its `open`
+target snapshot. It then joins that file's lane in original submission order.
+The request completes with a fresh readiness-time target description, preserving
+the normal `analysis: IdleState` result. A cancelled parked open leaves the file
+open, with its handle available in the retained snapshot.
+
+Admission is capped at 8 unfinished requests, including parked requests.
+Rejection occurs before recording the ID and explicitly guarantees no execution,
+so that rejected submission can be retried. Duplicate accepted IDs still return
+their existing record even at capacity. Receipts expose lane-relative queue
+position (counting queued requests), the immediate unfinished predecessor in
+that lane, and the retained target snapshot. Queue observations are captured
+under the scheduling lock.
 
 Each script receives fresh globals with `bn`, `bv`, `args`, `result`, and `on_ui`.
 Session-level scripts explicitly omit a target. The CLI preserves source filenames
@@ -360,7 +381,7 @@ so clients can distinguish acceptance and queue placement. Human acceptance
 receipts are useful only when `waits_behind` is non-null; queued status alone
 also describes an idle worker awaiting pickup. Client wait expiry is
 explicit in human and JSON output, with a recovery command; it does not cancel work.
-Elapsed seconds run from worker pickup (including readiness) or, for unstarted
+Elapsed seconds run from becoming a lane head (including readiness) or, for unstarted
 requests, submission. Listings lead with active and queued work and the newest five
 finished records by completion time; `--all` includes all finished metadata.
 
@@ -378,10 +399,13 @@ session does not. A restart cannot establish an earlier outcome.
 The `requests` response is an object with `requests` rows, `finished_total`,
 `finished_shown`, `rejected_total`, and `rejections`. Rows retain kind, filename,
 truncated error, output-pruned flag, target snapshot, phase, and timestamps.
-`queue_wait_seconds` measures submission to worker pickup, or to now/termination
-for unstarted work. `execution_seconds` measures worker pickup to now/termination,
-including readiness; it is null for unstarted requests, including queued
-cancellations. `elapsed_seconds` remains available with its previous semantics.
+`started` is set when a request first becomes a lane head.
+`queue_wait_seconds` measures submission to that point, or to now/termination
+for unstarted work. `execution_seconds` measures lane-head time to now/termination,
+including readiness and waiting for another lane's executing script; it is null
+for requests cancelled before reaching a lane head and other unstarted work.
+`elapsed_seconds` uses
+execution time when started, otherwise queue time.
 
 Cap-rejected attempts are separate from accepted records. A lifetime total counts
 all cap rejections; a ring retains the newest 64 events, oldest first. Each event
@@ -394,8 +418,9 @@ error, and an ID with neither gets the generic unknown-outcome warning. Duplicat
 recovery at capacity neither executes again nor counts as rejection. Invalid
 input is not a cap event.
 
-Cancellation can stop queued work or a pre-script analysis wait. It cannot safely
-interrupt running Python or native calls. Scripts are neither sandboxed nor
+Cancellation can stop queued work or a parked readiness wait, including an
+open after load/attachment. It cannot safely interrupt running Python or native
+calls. Scripts are neither sandboxed nor
 transactional; exceptions and forced stops can leave edits and external writes.
 
 ## Database persistence

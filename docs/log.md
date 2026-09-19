@@ -1479,3 +1479,47 @@ refused; and the runtime directory held no compositor or VNC sockets. The
 FHS launcher sees the host runtime directory, so no extra bind was needed.
 The desktop run was not exercised from inside the dev container; there the
 host socket would need to be bind-mounted and named by absolute path.
+
+## 2026-09-18 — File lanes and parked readiness waits
+
+Reviewed the h8v9cz plan against the executor, open script, bridge, Rust
+renderer, tests, and the installed 6.0.10601 Python API. No contract change or
+threading blocker was found: `update_analysis()` starts background analysis,
+and readiness probes stay on the same executor thread. Submitted Python and
+its undo groups remain serial. Lane heads are derived from submission order
+and file identity, so an open can acquire its file lane without moving behind
+newer requests. Untargeted work uses a separate lane without barrier semantics.
+
+Open now captures load/attachment output before parking, retains its view, and
+returns a fresh description at readiness. Cancellation keeps the open-stage
+snapshot and captured output while releasing retained execution references.
+Selection restarts if cancellation promotes a head during another readiness
+probe. Rust reports lane-relative queue placement and counts analysis waits
+separately from running work. Protocol 3 remains: the Rust client displays the
+queue fields without depending on global ordering. The pending cap remains 8.
+
+Verification: `tests/execution.py` passed 18 tests without Binary Ninja,
+covering file/sibling/session lanes, ready-head selection, open retargeting and
+readiness results, hold errors, queued/parked cancellation and waiter wakeups,
+revalidation, cancellation during probes, pending guards, cap, and retention.
+`cargo test` passed 10; API-index, framing, and update tests passed 5, 5, and 4.
+`nix build` passed, as did the installed protocol-3 bridge suite and the full
+default installed smoke suite using `temp/investigation/target` from disposable
+external workspaces. The smoke regression opens the small fixture and a copy
+of the installed Rust CLI, then observes the latter in native `AnalyzeState`
+after queries on the ready file complete in order across analyzed and Raw
+views. It also checks untargeted progress, refusal to bypass a parked open,
+close/stop pending guards, and cancellation with the opened handle retained.
+An isolated native probe measured the small file ready at 0.53 seconds and
+the larger file ready at 34.74 seconds, with the small-file query completing
+while the larger open was parked.
+
+The first smoke attempt stopped at an existing display-switch assertion that
+assumed `WAYLAND_DISPLAY` was set. That check now uses its own private compositor
+socket; the subsequent full default run passed. The optional desktop phase was
+not run because this shell has no desktop display configured. A repository-wide
+`cargo fmt --check` using nixpkgs rustfmt still reports pre-existing formatting
+in `src/render.rs` and `src/session.rs`; the changed Rust lines follow rustfmt.
+Logs are in `temp/h8v9cz-{smoke,bridge}.log`, with the initial failure retained
+in `temp/h8v9cz-smoke-initial.log`. Successful live workspaces were
+`/tmp/binja-smoke-ibpmc9sn` and `/tmp/binja-protocol-iw0ffdi9`.

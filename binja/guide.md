@@ -240,12 +240,18 @@ binja request REQUEST_ID --wait 30
 binja cancel QUEUED_REQUEST_ID
 ```
 
-One worker per session executes requests in order, so batch per-function work
-into one script; parallel shells only hide client overhead. At most 8 requests
-can be unfinished at once; a rejected submission never executes, and `request`
-on its ID says so until the rejection ages out of the newest 64. `cancel`
-works on queued requests and on pre-script analysis waits; running Python or
-native work cannot be interrupted.
+Requests on the same file run in submission order, including through different
+view handles. Analysis waits release the executor so requests on other files
+can proceed; untargeted scripts share their own queue and are not a barrier.
+Python still executes one request at a time, so batch per-function work into
+one script. `--allow-incomplete` does not jump earlier requests on the same file.
+Queue positions and predecessors refer to that file's queue (or the untargeted
+queue). At most 8 requests can be unfinished, including analysis waits; a
+rejected submission never executes, and `request` on its ID says so until the
+rejection ages out of the newest 64. `cancel` works on queued requests and
+readiness waits, including `open` after loading. Cancelling that wait leaves the
+file open; recover its handle from the request's target snapshot. Running Python
+or native work cannot be interrupted.
 
 After a read timeout or disconnect, inspect the printed ID. An unknown ID does
 not prove the script never ran. Recover with `request ID` or by resubmitting

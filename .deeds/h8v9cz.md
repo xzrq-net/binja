@@ -46,3 +46,75 @@ usable contract for me.
 The concrete scenario to improve: open A and B, then inspect A as soon as its
 analysis finishes while B is still analyzing, without bypassing readiness or
 reordering requests within A. The scheduling design is left for assessment.
+
+## Plan (2026-09-18)
+
+The request is sound. The lane boundary is the file (`bv.file.session_id`, the
+`file_id` close already uses): undo history, modification flags, and close all
+live there, so Raw and PE views of one file must never reorder against each
+other. In Binary Ninja terms the file is the database; per-view lanes would put
+two requests on one undo history.
+
+Decisions:
+
+1. One executor thread stays. Only readiness waits leave it. Python and native
+   calls from submitted scripts remain strictly one at a time, so the undo-group
+   concurrency warning is not exercised. Concurrent execution stays a separate
+   question.
+2. Lanes: each unfinished request belongs to the lane of its
+   `target_snapshot.file_id`; untargeted requests share one session lane. Within
+   a lane, strict submission order, including behind a parked `open`. Across
+   lanes, the executor runs the earliest-submitted lane head whose readiness is
+   satisfied. A head whose analysis is on hold runs and fails with the existing
+   resume error.
+3. A lane head whose view is still analyzing is parked with status
+   `waiting_analysis` and stays cancellable. `started` is set when a request
+   becomes a lane head, so `execution_seconds` keeps including readiness and
+   `queue_wait_seconds` keeps meaning time spent behind other requests.
+4. `open` splits: the script loads, attaches, starts analysis, and records the
+   `open`-stage snapshot; the request then parks in its file's lane and
+   completes with the readiness-time `describe` result. The `open` result and
+   its `analysis: IdleState` are unchanged. Cancelling a parked `open` leaves the
+   file open; its handle is in the record's target snapshot.
+5. `queue_position` and `waits_behind` become lane-relative, naming what the
+   request actually waits for. The global pending cap of 8 is unchanged; parked
+   requests count.
+6. Untargeted requests are not a barrier. With one executor nothing interleaves,
+   and barrier semantics would stall cheap session-level scripts behind parked
+   opens, which is the reported friction again.
+
+Non-goals: per-file executor threads, event-driven readiness (100 ms polling
+stays), changing the cap, and `--allow-incomplete` bypassing a parked lane head.
+
+Verification: unit coverage in `tests/execution.py` for lane selection, parking,
+hold, and cancellation; a smoke phase reproducing the reported scenario (two
+files analyzing, a query on the first completes while the second still
+analyzes, order within a file preserved); `docs/design.md`, `binja/guide.md`,
+and `docs/log.md` updated.
+
+## Outcome (2026-09-18)
+
+Implemented the plan with no user-facing contract deviations. One executor
+selects file-lane heads in submission order and parks readiness waits;
+untargeted requests have their own non-barrier lane. Open retains its loaded
+view and captured output across parking, then returns the readiness-time
+description. Its snapshot remains available after cancellation. The cap is
+still 8, including parked requests, and protocol 3 remains compatible with
+the Rust client's use of the queue fields.
+
+Review details resolved: derive lanes from ordered request records to preserve
+order when an open acquires its file identity; restart selection when a
+concurrent cancellation promotes a head; keep readiness probes and all undo
+actions on the existing executor; distinguish parked waits from running work
+in human status. Existing bridge condition waits need no protocol changes.
+
+Verified with 18 Binary-Ninja-free execution tests, 10 Rust tests, API-index (5),
+framing (5), updates (4), `nix build`, the installed live bridge suite, and the
+full default installed smoke suite. The new smoke phase observed native
+analysis on a second file while ready-file queries completed in order across
+analyzed and Raw views; cancellation, pending guards, and untargeted progress
+also passed. The initial smoke display-fixture failure was fixed and the
+suite rerun successfully. Optional desktop-mode smoke was not selected because
+no desktop display is configured. Repository-wide rustfmt checks still flag
+pre-existing formatting outside the changed lines. Details and evidence paths
+are in the dated investigation-log entry. Issue left open for user review.

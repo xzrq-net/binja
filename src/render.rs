@@ -52,7 +52,7 @@ pub fn receipt(v: &Value, existing: bool, json_mode: bool, verbose: bool) -> Res
         eprintln!("{}", serde_json::to_string(&event)?);
     } else if !v["waits_behind"].is_null() {
         eprintln!(
-            "{}: queued #{}  target snapshot {}  behind {}",
+            "{}: lane queued #{}  target snapshot {}  behind {}",
             if existing {
                 "Existing request"
             } else {
@@ -100,7 +100,7 @@ pub fn row(v: &Value) -> String {
     let mut line = request_head(v);
     if v["status"] == "queued" {
         line.push_str(&format!(
-            "  queued #{}  waiting {:.3}s",
+            "  lane queued #{}  waiting {:.3}s",
             v["queue_position"],
             seconds(v, "queue_wait_seconds")
         ));
@@ -374,17 +374,21 @@ pub fn render(
                 } else {
                     let rows = v["requests"].as_array().map(Vec::as_slice).unwrap_or(&[]);
                     let queued = rows.iter().filter(|r| r["status"] == "queued").count();
+                    let waiting = rows
+                        .iter()
+                        .filter(|r| r["status"] == "waiting_analysis")
+                        .count();
                     if v["file_count"].is_null() {
                         println!("Running  {}  files and views unknown", text(v, "state_dir"));
                     } else {
                         println!(
-                            "Running  {}  {} file{} ({} view{})  {} running, {queued} queued",
+                            "Running  {}  {} file{} ({} view{})  {} running, {waiting} waiting for analysis, {queued} queued",
                             text(v, "state_dir"),
                             v["file_count"],
                             if v["file_count"] == 1 { "" } else { "s" },
                             v["view_count"],
                             if v["view_count"] == 1 { "" } else { "s" },
-                            rows.len() - queued
+                            rows.len() - queued - waiting
                         );
                     }
                     println!("{}", display_line(v));

@@ -3,7 +3,6 @@ from collections import OrderedDict, deque
 from contextlib import contextmanager
 import json
 from pathlib import Path
-import queue
 import re
 import shlex
 import sys
@@ -102,7 +101,6 @@ class Execution:
         self.rejected_total = 0
         self.rejections = deque(maxlen=KEEP_REJECTIONS)
         self.records = OrderedDict()
-        self.work = queue.Queue()
         self.stopping = False
         self.stdout = ThreadOutput(sys.stdout)
         self.stderr = ThreadOutput(sys.stderr)
@@ -126,7 +124,8 @@ class Execution:
         value["elapsed_seconds"] = value["execution_seconds"] if started is not None else value["queue_wait_seconds"]
         value["phase"] = value["status"] if value["status"] in TERMINAL else value.get("phase", value["status"])
         if record["status"] == "queued":
-            pending = [r for r in self.records.values() if r["status"] not in TERMINAL]
+            pending = [r for r in self.records.values() if r["status"] not in TERMINAL
+                and self.lane(r) == self.lane(record)]
             position = next(i for i, r in enumerate(pending) if r["id"] == record["id"])
             value["queue_position"] = sum(r["status"] == "queued" for r in pending[:position + 1])
             value["waits_behind"] = pending[position - 1]["id"] if position else None
@@ -214,7 +213,8 @@ class Execution:
                 kind=spec.get("kind", "py"), filename=spec["filename"],
                 _spec=spec, _bv=bv)
             self.records[request_id] = record
-            self.work.put(record)
+            self.promote_heads()
+            self.changed.notify_all()
             return self.snapshot(record)
 
     def cancel(self, request_id):
@@ -225,35 +225,75 @@ class Execution:
                 return self.get(request_id)
             if record["status"] not in ("queued", "waiting_analysis"):
                 raise Error("Only queued requests or readiness waits can be cancelled; running Python/native work cannot be interrupted safely.")
-            record["status"] = "cancelled"
-            record["finished"] = time.time()
-            self.changed.notify_all()
+            self.finish(record, status="cancelled")
             return self.snapshot(record)
 
-    def wait_ready(self, bv, record, before_execution=True):
-        if record["allow_incomplete"]:
-            return
+    @staticmethod
+    def lane(record):
+        return (record.get("target_snapshot") or {}).get("file_id")
+
+    def lane_heads(self):
+        # Called under the lock. Derive lanes from submission order so an open
+        # can acquire its file identity without moving behind newer requests.
+        heads = {}
+        for record in self.records.values():
+            if record["status"] not in TERMINAL:
+                heads.setdefault(self.lane(record), record)
+        return list(heads.values())
+
+    def promote_heads(self):
+        for record in self.lane_heads():
+            record.setdefault("started", time.time())
+
+    def ready(self, record, bv):
+        if bv is None:
+            return True
+        # Never hold the scheduling lock while waiting on the UI. Revalidate
+        # parked handles as well: a closed view must fail, not park forever.
+        on_ui(lambda: self.bridge.targets.resolve(record["target_snapshot"]["handle"]))
+        if record["allow_incomplete"] or record["kind"] == "close":
+            return True
+        state = bv.analysis_state
+        # Raw has no analysis pipeline and remains InitialState in this API.
+        if state == self.bn.AnalysisState.IdleState or (bv.view_type == "Raw" and state == self.bn.AnalysisState.InitialState):
+            return True
+        if state == self.bn.AnalysisState.HoldState:
+            target = record["target_snapshot"]["handle"]
+            resume = shlex.join(["binja", "--state-dir", str(self.bridge.state), "py",
+                "--target", target, "--allow-incomplete", "-c",
+                "bv.set_analysis_hold(False); bv.update_analysis_and_wait()"])
+            raise Error(f"Analysis is on hold. Resume this target with:\n{resume}\n"
+                "Or pass --allow-incomplete to deliberately use incomplete results.")
+        return False
+
+    def select(self):
         with self.lock:
-            if record["status"] == "cancelled":
-                raise Error("Request cancelled before execution.")
-            if before_execution:
-                record["status"] = "waiting_analysis"
-            record["phase"] = "waiting_analysis"
-        while True:
-            if record["status"] == "cancelled":
-                raise Error("Request cancelled before execution.")
-            state = bv.analysis_state
-            # Raw has no analysis pipeline and remains InitialState in this API.
-            if state == self.bn.AnalysisState.IdleState or (bv.view_type == "Raw" and state == self.bn.AnalysisState.InitialState):
-                return
-            if state == self.bn.AnalysisState.HoldState:
-                target = record["target_snapshot"]["handle"]
-                resume = shlex.join(["binja", "--state-dir", str(self.bridge.state), "py",
-                    "--target", target, "--allow-incomplete", "-c",
-                    "bv.set_analysis_hold(False); bv.update_analysis_and_wait()"])
-                raise Error(f"Analysis is on hold. Resume this target with:\n{resume}\n"
-                    "Or pass --allow-incomplete to deliberately use incomplete results.")
-            time.sleep(0.1)
+            heads = self.lane_heads()
+        for record in heads:
+            with self.lock:
+                if record["status"] in TERMINAL:
+                    continue
+                bv = record["_bv"]
+            error = None
+            try:
+                ready = self.ready(record, bv)
+            except BaseException as exc:
+                # Hold and expired handles run through normal failure capture.
+                ready, error = True, exc
+            with self.lock:
+                if any(head["status"] in TERMINAL for head in heads):
+                    return None  # Cancellation may have promoted an older head.
+                if ready:
+                    record.update(status="running", phase="executing", _readiness_error=error)
+                    return record
+                record.update(status="waiting_analysis", phase="waiting_analysis")
+        return None
+
+    def opened(self, record, bv, target):
+        with self.lock:
+            record.update(target_snapshot=target, target_snapshot_stage="open",
+                _bv=bv, _open_pending=True)
+            self.promote_heads()
 
     def check_close(self, target, kind, request_id=None):
         # Called under the admission lock; every view of a file shares its fate.
@@ -316,10 +356,12 @@ class Execution:
 
     def execute(self, record):
         bv = record["_bv"]
-        spec = record["_spec"]
         directory = self.bridge.state / "artifacts" / record["id"]
-        directory.mkdir(mode=0o700)
-        stdout, stderr = Output(directory / "stdout.txt"), Output(directory / "stderr.txt")
+        completing_open = record.get("_open_pending", False)
+        stdout = stderr = None
+        if not completing_open:
+            directory.mkdir(mode=0o700)
+            stdout, stderr = Output(directory / "stdout.txt"), Output(directory / "stderr.txt")
         outcome = {}
 
         def captured_ui(function):
@@ -329,16 +371,17 @@ class Execution:
             return on_ui(invoke)
 
         try:
+            if record["_readiness_error"] is not None:
+                raise record["_readiness_error"]
             if bv is not None:
+                # The readiness probe may have waited on the UI; validate again
+                # immediately before executing or describing the opened view.
                 on_ui(lambda: self.bridge.targets.resolve(record["target_snapshot"]["handle"]))
-                if record["kind"] != "close":
-                    self.wait_ready(bv, record)
-                on_ui(lambda: self.bridge.targets.resolve(record["target_snapshot"]["handle"]))
-            with self.lock:
-                if record["status"] == "cancelled":
-                    return
-                record["status"] = "running"
-                record["phase"] = "executing"
+            if completing_open:
+                result = on_ui(lambda: self.bridge.targets.describe(bv))
+                outcome = dict(self.store_result(result, directory / "result.json"), status="completed")
+                return
+            spec = record["_spec"]
             scope = dict(bn=self.bn, bv=bv, args=spec.get("args", {}), result=None,
                 on_ui=captured_ui, bridge=self.bridge, request=record, __name__="__binja_script__")
             with self.stdout.capture(stdout), self.stderr.capture(stderr):
@@ -349,8 +392,9 @@ class Execution:
                     # Keep partial edits undoable when a script raises; never roll them back.
                     if undo_id is not None:
                         bv.commit_undo_actions(undo_id)
-            value = self.store_result(scope["result"], directory / "result.json")
-            outcome = dict(value, status="completed")
+            if not record.get("_open_pending"):
+                value = self.store_result(scope["result"], directory / "result.json")
+                outcome = dict(value, status="completed")
         except BaseException as exc:
             with self.lock:
                 if record["status"] != "cancelled":
@@ -358,46 +402,55 @@ class Execution:
                     if not isinstance(exc, Error):
                         outcome["traceback"] = script_traceback(exc)[-INLINE_BYTES:]
         finally:
-            output, errors = stdout.finish(), stderr.finish()
+            streams = dict(stdout=stdout.finish(), stderr=stderr.finish()) if stdout is not None else {}
             with self.lock:
-                record.update(outcome, stdout=output, stderr=errors)
-                record.setdefault("finished", time.time())
-                self.changed.notify_all()
-                record.pop("phase", None)
-                record.pop("_bv", None)
-                record.pop("_spec", None)
+                record.update(streams)
+                if outcome:
+                    self.finish(record, **outcome)
+                else:
+                    # The open script is done. Keep its captured output and
+                    # retained view, but release the executor until readiness.
+                    record.update(status="queued", phase="preparing")
+                    record.pop("_spec", None)
+                    self.changed.notify_all()
+
+    def finish(self, record, **outcome):
+        # Called under the lock for every terminal transition, including cancel.
+        record.update(outcome, finished=time.time())
+        for key in ("phase", "_bv", "_spec", "_open_pending", "_readiness_error"):
+            record.pop(key, None)
+        self.promote_heads()
+        self.prune()
+        self.changed.notify_all()
+
+    def prune(self):
+        finished = sorted((key for key, item in self.records.items()
+            if item["status"] in TERMINAL and not item.get("output_pruned")),
+            key=lambda key: self.records[key]["finished"])
+        for key in finished[:-KEEP_RESULTS]:
+            item = self.records[key]
+            directory = self.bridge.state / "artifacts" / key
+            if "result" in item:
+                item["result_artifact"] = str(directory / "result.json")
+                item.pop("result")
+            for stream in ("stdout", "stderr"):
+                if stream in item:
+                    item[stream] = {k: v for k, v in item[stream].items() if k != "text"}
+                    item[stream]["artifact"] = str(directory / (stream + ".txt"))
+            item["output_pruned"] = True
 
     def run(self):
         while True:
-            record = self.work.get()
+            with self.changed:
+                self.changed.wait_for(lambda: bool(self.lane_heads()))
+            record = self.select()
+            if record is None:
+                with self.changed:
+                    self.changed.wait(timeout=0.1)
+                continue
             try:
-                with self.lock:
-                    execute = record["status"] != "cancelled"
-                    if execute:
-                        record.update(status="running", phase="preparing", started=time.time())
-                if execute:
-                    self.execute(record)
+                self.execute(record)
             except BaseException as exc:
                 # Artifact I/O can fail before script execution or during output finalization.
                 with self.lock:
-                    record.update(status="failed", error=f"Request infrastructure error: {exc}"[-INLINE_BYTES:], finished=time.time())
-                    self.changed.notify_all()
-            finally:
-                with self.lock:
-                    record.pop("_bv", None)
-                    record.pop("_spec", None)
-            with self.lock:
-                finished = sorted((key for key, item in self.records.items()
-                    if item["status"] in TERMINAL and not item.get("output_pruned")),
-                    key=lambda key: self.records[key]["finished"])
-                for key in finished[:-KEEP_RESULTS]:
-                    item = self.records[key]
-                    directory = self.bridge.state / "artifacts" / key
-                    if "result" in item:
-                        item["result_artifact"] = str(directory / "result.json")
-                        item.pop("result")
-                    for stream in ("stdout", "stderr"):
-                        if stream in item:
-                            item[stream] = {k: v for k, v in item[stream].items() if k != "text"}
-                            item[stream]["artifact"] = str(directory / (stream + ".txt"))
-                    item["output_pruned"] = True
+                    self.finish(record, status="failed", error=f"Request infrastructure error: {exc}"[-INLINE_BYTES:])

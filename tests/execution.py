@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Condition wakeups and readiness cancellation without Binary Ninja."""
+"""File lanes, readiness, cancellation, and recovery without Binary Ninja."""
 from collections import OrderedDict, deque
 from pathlib import Path
+import io
 import shlex
+import tempfile
 import sys
 import threading
 import time
@@ -46,99 +48,277 @@ class TracebackTests(unittest.TestCase):
         self.assertNotIn(execution_module.__file__, text)
 
 
-class WaitTests(unittest.TestCase):
+class SchedulerTests(unittest.TestCase):
     def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.views = {}
         self.execution = e = Execution.__new__(Execution)
-        e.bridge = types.SimpleNamespace(generation='abcdef123456')
+        e.bridge = types.SimpleNamespace(generation='abcdef123456', state=Path(self.directory.name))
+        (e.bridge.state / 'artifacts').mkdir()
+        e.bridge.execution = e
+        e.bridge.targets = types.SimpleNamespace(resolve=self.resolve, describe=self.describe)
         e.lock = threading.RLock()
         e.changed = threading.Condition(e.lock)
         e.records = OrderedDict()
         e.rejections = deque(maxlen=execution_module.KEEP_REJECTIONS)
+        e.rejected_total = 0
+        e.stopping = False
         e.bn = types.SimpleNamespace(AnalysisState=types.SimpleNamespace(IdleState=0, InitialState=1, HoldState=2))
-        self.rid = e.bridge.generation + ':rwait'
-        e.records[self.rid] = dict(id=self.rid, status='running', submitted=time.time()-.5,
-            started=time.time()-.2, allow_incomplete=False)
+        e.stdout = execution_module.ThreadOutput(io.StringIO())
+        e.stderr = execution_module.ThreadOutput(io.StringIO())
+        original = sys.stdout, sys.stderr
+        sys.stdout, sys.stderr = e.stdout, e.stderr
+        self.addCleanup(lambda: setattr(sys, 'stdout', original[0]))
+        self.addCleanup(lambda: setattr(sys, 'stderr', original[1]))
+        self.a = self.view(7)
+        self.raw = self.view(7, 'Raw', 1)
+        self.b = self.view(8)
 
-    def test_readiness_cancel_wakes_all_waiters(self):
+    def view(self, file_id, view_type='ELF', state=0):
+        handle = f'abcdef123456:v{len(self.views) + 1}'
+        view = types.SimpleNamespace(file_id=file_id, handle=handle,
+            view_type=view_type, analysis_state=state,
+            begin_undo_actions=lambda: 'undo', commit_undo_actions=lambda undo: None)
+        self.views[handle] = view
+        return view
+
+    def describe(self, view):
+        return dict(handle=view.handle, file_id=view.file_id, view_type=view.view_type,
+            analysis=view.analysis_state)
+
+    def resolve(self, handle):
+        if handle not in self.views:
+            raise Error('Target handle expired')
+        view = self.views[handle]
+        return view, self.describe(view)
+
+    def submit(self, view=None, source='result = 42', **flags):
         e = self.execution
-        record = e.records[self.rid]
-        view = types.SimpleNamespace(analysis_state=3, view_type='ELF')
-        results, readiness_errors = [], []
-        def ready():
-            try:
-                e.wait_ready(view, record)
-            except Error as exc:
-                readiness_errors.append(str(exc))
-        readiness = threading.Thread(target=ready)
-        readiness.start()
-        deadline = time.monotonic() + 2
-        while record['status'] != 'waiting_analysis':
-            self.assertLess(time.monotonic(), deadline)
-            time.sleep(.001)
-        waiters = [threading.Thread(target=lambda: results.append(e.wait(self.rid, 10))) for _ in range(3)]
+        spec = dict(id=f'abcdef123456:r{len(e.records)}', source=source, filename='probe.py',
+            no_target=view is None, target=view.handle if view else None, **flags)
+        return e.records[e.submit(spec)['id']]
+
+    def step(self, expected):
+        record = self.execution.select()
+        self.assertIs(record, expected)
+        if record is not None:
+            self.execution.execute(record)
+        return record
+
+    def test_file_lanes_and_earliest_ready_head(self):
+        e = self.execution
+        self.a.analysis_state = 3
+        first = self.submit(self.a)
+        sibling = self.submit(self.raw, allow_incomplete=True)
+        other = self.submit(self.b)
+        session = self.submit()
+        session_tail = self.submit()
+        self.assertNotIn('started', sibling)
+        self.assertNotIn('started', session_tail)
+        self.assertIn('started', other)
+        self.assertEqual(e.snapshot(sibling)['waits_behind'], first['id'])
+        self.assertEqual(e.snapshot(sibling)['queue_position'], 2)
+        self.assertIsNone(e.snapshot(other)['waits_behind'])
+        self.assertEqual(e.snapshot(session_tail)['waits_behind'], session['id'])
+        self.step(other)
+        self.assertEqual(first['status'], 'waiting_analysis')
+        self.assertEqual(e.snapshot(sibling)['queue_position'], 1)
+        # Untargeted requests aren't a barrier and don't wait for parked files.
+        self.step(session)
+        self.step(session_tail)
+        self.step(None)
+        self.a.analysis_state = 0
+        self.step(first)
+        self.assertIn('started', sibling)
+        self.step(sibling)
+        self.assertLessEqual(first['finished'], sibling['started'])
+        self.assertEqual(first['result'], 42)
+
+    def test_readiness_cancel_wakes_waiters_and_promotes_sibling(self):
+        e = self.execution
+        self.a.analysis_state = 3
+        record = self.submit(self.a)
+        sibling = self.submit(self.raw)
+        self.step(None)
+        self.assertEqual(record['status'], 'waiting_analysis')
+        results = []
+        waiters = [threading.Thread(target=lambda: results.append(e.wait(record['id'], 10))) for _ in range(3)]
         for thread in waiters:
             thread.start()
-        e.cancel(self.rid)
-        for thread in waiters + [readiness]:
+        e.cancel(record['id'])
+        for thread in waiters:
             thread.join(2)
             self.assertFalse(thread.is_alive())
         self.assertEqual(len(results), 3)
         self.assertTrue(all(r['status'] == 'cancelled' and r['execution_seconds'] > 0 for r in results))
-        self.assertEqual(readiness_errors, ['Request cancelled before execution.'])
-        # Terminal-before-wait must return immediately too (no lost notification).
-        self.assertEqual(e.wait(self.rid, 10)['status'], 'cancelled')
+        self.assertNotIn('_bv', record)
+        self.assertEqual(e.wait(record['id'], 10)['status'], 'cancelled')
+        self.step(sibling)  # Raw InitialState needs no pipeline.
 
     def test_deadline_and_unstarted_cancellation(self):
         e = self.execution
+        head = self.submit(self.a)
+        record = self.submit(self.a)
         before = time.monotonic()
-        result = e.wait(self.rid, .01)
+        result = e.wait(record['id'], .01)
         self.assertGreaterEqual(time.monotonic() - before, .009)
         self.assertTrue(result['client_wait_expired'])
-        record = e.records[self.rid]
-        record.pop('started')
-        record['status'] = 'queued'
-        cancelled = e.cancel(self.rid)
+        cancelled = e.cancel(record['id'])
         self.assertIsNone(cancelled['execution_seconds'])
         self.assertGreater(cancelled['queue_wait_seconds'], 0)
-        self.assertNotIn('client_wait_expired', e.wait(self.rid, 0))
+        self.assertNotIn('client_wait_expired', e.wait(record['id'], 0))
+        self.assertIs(e.select(), head)
+        with self.assertRaisesRegex(Error, 'Only queued'):
+            e.cancel(head['id'])
 
-    def test_hold_resume_names_retained_target_and_quotes_state_path(self):
+    def test_hold_runs_and_fails_with_resume_command(self):
         e = self.execution
-        e.bridge.state = Path("/tmp/agent's workspace/.binja")
-        record = e.records[self.rid]
-        record['target_snapshot'] = dict(handle='abcdef123456:v2')
-        view = types.SimpleNamespace(analysis_state=e.bn.AnalysisState.HoldState, view_type='ELF')
-        with self.assertRaises(Error) as raised:
-            e.wait_ready(view, record)
-        command = str(raised.exception).splitlines()[1]
+        e.bridge.state = Path(self.directory.name) / "agent's workspace"
+        (e.bridge.state / 'artifacts').mkdir(parents=True)
+        self.a.analysis_state = 3
+        record = self.submit(self.a, "raise AssertionError('must not run')")
+        self.step(None)
+        self.a.analysis_state = 2
+        self.step(record)
+        self.assertEqual(record['status'], 'failed')
+        command = record['error'].splitlines()[1]
         self.assertEqual(shlex.split(command), ['binja', '--state-dir', str(e.bridge.state),
-            'py', '--target', 'abcdef123456:v2', '--allow-incomplete', '-c',
+            'py', '--target', self.a.handle, '--allow-incomplete', '-c',
             'bv.set_analysis_hold(False); bv.update_analysis_and_wait()'])
+        self.step(self.submit(self.a, allow_incomplete=True))
+
+    def open_request(self, view):
+        self.execution.bridge.loaded = view
+        return self.submit(source="print('load output'); bridge.execution.opened(request, bridge.loaded, bridge.targets.describe(bridge.loaded))",
+            kind='open')
+
+    def test_open_parks_in_file_lane_and_describes_at_readiness(self):
+        e = self.execution
+        self.a.analysis_state = 3
+        opened = self.open_request(self.a)
+        self.step(opened)
+        snapshot = dict(opened['target_snapshot'])
+        sibling = self.submit(self.raw, allow_incomplete=True)
+        other = self.submit(self.b)
+        self.step(other)
+        self.assertEqual(opened['status'], 'waiting_analysis')
+        self.assertNotIn('finished', opened)
+        self.assertNotIn('result', opened)
+        self.assertEqual(opened['target_snapshot_stage'], 'open')
+        self.assertEqual(e.snapshot(sibling)['waits_behind'], opened['id'])
+        self.a.analysis_state = 0
+        self.step(opened)
+        self.assertEqual(opened['result']['analysis'], 0)
+        self.assertEqual(opened['target_snapshot'], snapshot)
+        self.assertEqual(opened['stdout']['text'], 'load output\n')
+        artifact = e.bridge.state / 'artifacts' / opened['id'] / 'stdout.txt'
+        self.assertEqual(artifact.read_text(), 'load output\n')
+        self.step(sibling)
+
+    def test_open_joins_existing_file_in_submission_order(self):
+        self.a.analysis_state = 3
+        older = self.submit(self.a)
+        opened = self.open_request(self.a)
+        newer = self.submit(self.raw, allow_incomplete=True)
+        self.step(opened)  # Load stage may proceed in the session lane.
+        self.step(None)
+        e = self.execution
+        self.assertEqual(e.snapshot(opened)['waits_behind'], older['id'])
+        self.assertEqual(e.snapshot(newer)['waits_behind'], opened['id'])
+        self.a.analysis_state = 0
+        self.step(older)
+        self.step(opened)
+        self.step(newer)
+
+    def test_cancel_parked_open_keeps_target_and_output(self):
+        e = self.execution
+        self.a.analysis_state = 3
+        record = self.open_request(self.a)
+        self.step(record)
+        self.step(None)
+        with self.assertRaisesRegex(Error, 'Outstanding'):
+            e.prepare_stop()
+        cancelled = e.cancel(record['id'])
+        self.assertEqual(cancelled['target_snapshot']['handle'], self.a.handle)
+        self.assertEqual(cancelled['stdout']['text'], 'load output\n')
+        self.assertIn(self.a.handle, self.views)
+        self.assertNotIn('_bv', record)
+        self.assertNotIn('_spec', record)
+        self.step(None)
+
+    def test_parked_handles_and_readiness_time_handles_are_revalidated(self):
+        e = self.execution
+        self.a.analysis_state = 3
+        record = self.submit(self.a)
+        self.step(None)
+        del self.views[self.a.handle]
+        self.step(record)
+        self.assertIn('handle expired', record['error'])
+        record = self.submit(self.b)
+        self.assertIs(e.select(), record)
+        del self.views[self.b.handle]
+        e.execute(record)
+        self.assertIn('handle expired', record['error'])
+
+    def test_cancel_during_probe_never_executes_or_resurrects(self):
+        e = self.execution
+        record = self.submit(self.a)
+        def resolve(handle):
+            e.cancel(record['id'])
+            return self.resolve(handle)
+        e.bridge.targets.resolve = resolve
+        self.step(None)
+        self.assertEqual(record['status'], 'cancelled')
+        self.assertNotIn('result', record)
+
+    def test_cancel_during_other_probe_reconsiders_promoted_head(self):
+        e = self.execution
+        self.a.analysis_state = 3
+        first = self.submit(self.a)
+        sibling = self.submit(self.raw)
+        other = self.submit(self.b)
+        def resolve(handle):
+            if handle == self.b.handle and first['status'] != 'cancelled':
+                e.cancel(first['id'])
+            return self.resolve(handle)
+        e.bridge.targets.resolve = resolve
+        self.step(None)
+        self.step(sibling)
+        self.step(other)
+
+    def test_close_skips_readiness_on_hold(self):
+        self.a.analysis_state = 2
+        closing = self.submit(self.a, kind='close')
+        self.step(closing)
+        self.assertEqual(closing['status'], 'completed')
+
+    def test_parked_requests_count_toward_cap(self):
+        e = self.execution
+        for i in range(8):
+            self.submit(self.view(20 + i, state=3))
+        self.step(None)
+        self.assertTrue(all(r['status'] == 'waiting_analysis' for r in e.records.values()))
+        with self.assertRaisesRegex(Error, 'pending cap 8'):
+            self.submit()
 
     def test_pruning_keeps_newest_completion_after_later_cancellations(self):
         e = self.execution
-        e.bridge.state = Path("/unused")
-        newest = e.records[self.rid]
-        # Submitted first, but completes after 65 later requests were cancelled.
+        newest = self.submit(self.a)
         for i in range(65):
-            rid = f"cancel{i}"
-            e.records[rid] = dict(id=rid, status="cancelled", finished=i)
-        work = iter([newest])
-        e.work = types.SimpleNamespace(get=lambda: next(work))
-        e.execute = lambda record: record.update(status="completed", finished=100, result="latest")
-        with self.assertRaises(StopIteration):
-            e.run()
-        self.assertEqual(newest["result"], "latest")
-        self.assertFalse(newest.get("output_pruned", False))
-        self.assertTrue(e.records["cancel0"]["output_pruned"])
-        self.assertTrue(e.records["cancel1"]["output_pruned"])
-        self.assertFalse(e.records["cancel2"].get("output_pruned", False))
+            rid = f'cancel{i}'
+            e.records[rid] = dict(id=rid, status='cancelled', finished=i)
+        self.step(newest)
+        self.assertEqual(newest['result'], 42)
+        self.assertFalse(newest.get('output_pruned', False))
+        self.assertTrue(e.records['cancel0']['output_pruned'])
+        self.assertTrue(e.records['cancel1']['output_pruned'])
+        self.assertFalse(e.records['cancel2'].get('output_pruned', False))
 
     def test_rejection_ring_does_not_admit_or_count_duplicates(self):
         e = self.execution
-        e.stopping = False
-        e.rejected_total = 0
-        e.rejections = deque(maxlen=64)
+        first = self.submit(self.a)
+        self.rid = first['id']
         for i in range(7):
             rid = e.bridge.generation + ':rqueued' + str(i)
             e.records[rid] = dict(id=rid, status='queued', submitted=time.time())

@@ -229,7 +229,9 @@ def main():
         assert session["state_dir"] == str(state)
         assert session["display"] == "headless"
         assert session["vnc_socket"] == str(state / "runtime/vnc.sock")
-        assert "stop it before switching" in cli("start", "--display", "desktop", code=1)["error"]
+        # Exercise mode mismatch even when the caller has no desktop socket.
+        switch_env = dict(env, WAYLAND_DISPLAY=str(state / "runtime/wayland-0"))
+        assert "stop it before switching" in cli("start", "--display", "desktop", code=1, env=switch_env)["error"]
         assert session["version"].split()[0] == symbol["version"]
         assert cli("--state-dir", state, "status")["generation"] == session["generation"]
         assert py("import os; result = os.getcwd()", no_target=True)["result"] == str(workspace)
@@ -386,10 +388,81 @@ result = on_ui(modal)
         viewer.close()
 
         assert "No live target" in py("result = bv", code=1)["error"]
-        opened_a = cli("open", sample_a)
+        phase("File lanes: ready-file queries during another open's native analysis")
+        # The installed Rust executable is a larger, locally available analysis
+        # fixture. Assert observed native states; never substitute a sleep or a
+        # fake analysis_state for the second file's actual analysis.
+        slow_sample = workspace / "analyzing-binja"
+        shutil.copy2(binary, slow_sample)
+        opened_a = cli("open", sample_a, "--no-wait")
+        analyzing = cli("open", slow_sample, "--no-wait")
+        opened_a = retrieve(opened_a)
         assert opened_a["target_snapshot_stage"] == "open"
         a = opened_a["result"]["handle"]
         assert opened_a["result"]["analysis"] == "IdleState"
+
+        def waiting_analysis(record):
+            deadline = time.monotonic() + 10
+            while True:
+                record = cli("request", record["id"], code=2)
+                if record["status"] == "waiting_analysis":
+                    return record
+                assert time.monotonic() < deadline, record
+                time.sleep(.01)
+
+        analyzing = waiting_analysis(analyzing)
+        slow_handle = analyzing["target_snapshot"]["handle"]
+        views = cli("targets")
+        slow_raw = next(t["handle"] for t in views
+            if t["path"] == str(slow_sample) and t["view_type"] == "Raw")
+        first_raw = next(t["handle"] for t in views
+            if t["path"] == str(sample_a) and t["view_type"] == "Raw")
+        blocked = py("raise AssertionError('cancelled readiness work ran')", slow_handle, no_wait=True)
+        bypass = py("raise AssertionError('allow-incomplete jumped its lane')", slow_raw,
+            allow_incomplete=True, no_wait=True)
+        assert blocked["status"] == bypass["status"] == "queued"
+        assert blocked["waits_behind"] == analyzing["id"] and blocked["queue_position"] == 1
+        assert bypass["waits_behind"] == blocked["id"] and bypass["queue_position"] == 2
+        assert "Outstanding requests" in cli("close", slow_raw, "--force", code=1)["error"]
+        assert "Outstanding requests" in cli("stop", code=1)["error"]
+        assert py("result = 'session lane progresses'", no_target=True, wait=2)["result"] == "session lane progresses"
+
+        order_release = workspace / "release-lane-order"
+        first_query = py('''import time
+from pathlib import Path
+deadline = time.monotonic() + 20
+while not Path(args).exists() and time.monotonic() < deadline:
+    time.sleep(.01)
+bridge.smoke_lane_order = ['analyzed']
+result = dict(analysis=bv.analysis_state.name, functions=len(bv.functions))
+''', a, no_wait=True, args=json.dumps(str(order_release)))
+        try:
+            second_query = py("bridge.smoke_lane_order.append('raw'); result = bridge.smoke_lane_order", first_raw,
+                allow_incomplete=True, no_wait=True)
+            assert second_query["waits_behind"] == first_query["id"]
+        finally:
+            order_release.touch()
+        first_query = cli("request", first_query["id"], "--wait", "2")
+        second_query = cli("request", second_query["id"], "--wait", "2")
+        assert first_query["result"]["analysis"] == "IdleState" and first_query["result"]["functions"] > 0
+        assert second_query["result"] == ["analyzed", "raw"]
+        assert first_query["finished"] <= second_query["started"]
+        assert cli("request", analyzing["id"], code=2)["status"] == "waiting_analysis"
+        slow_state = next(t["analysis"] for t in cli("targets") if t["handle"] == slow_handle)
+        assert slow_state not in ("IdleState", "HoldState", "InitialState"), slow_state
+        status_text = subprocess.check_output([binary, "status"], cwd=workspace, env=env, text=True)
+        assert "0 running, 1 waiting for analysis, 2 queued" in status_text
+        phase(f"Ready-file queries completed in order while the other file was in {slow_state}")
+
+        cancelled_open = cli("cancel", analyzing["id"])
+        assert cancelled_open["target_snapshot"]["handle"] == slow_handle
+        assert cancelled_open["target_snapshot_stage"] == "open"
+        assert slow_handle in {t["handle"] for t in cli("targets")}
+        waiting_analysis(blocked)
+        assert cli("request", bypass["id"], code=2)["status"] == "queued"
+        assert cli("cancel", bypass["id"])["execution_seconds"] is None
+        assert cli("cancel", blocked["id"])["execution_seconds"] > 0
+        cli("close", slow_handle, "--force")
         assert py("result = bv.file.filename")["result"] == str(sample_a)
         one_file = cli("status")
         assert one_file["file_count"] == 1 and one_file["view_count"] >= 2
@@ -898,12 +971,12 @@ result = sorted(str(name) for name in parsed.types)
         assert accepted["target_snapshot"]["handle"] == a
         assert queued["client_wait_expired"] and queued["recovery_command"]
         human_id = session["generation"] + ":rhumanqueue"
-        human = subprocess.run([binary, "py", "-c", "result = bv.file.filename", "--target", b,
+        human = subprocess.run([binary, "py", "-c", "result = bv.file.filename", "--target", a,
             "--request-id", human_id, "--wait", ".01"], cwd=workspace, env=env,
             text=True, capture_output=True, timeout=10)
         assert human.returncode == 2
         assert "queued #2" in human.stderr and queued["id"] in human.stderr
-        assert b in human.stderr and "target snapshot" in human.stderr
+        assert a in human.stderr and "target snapshot" in human.stderr
         assert "Client wait expired" in human.stdout and "Retrieve with:" in human.stdout
         extras = [py("result = bv.file.filename", a, no_wait=True) for _ in range(4)]
         extras.append(py("bv.set_comment_at(bv.entry_point, 'must not run')", a, no_wait=True))
@@ -958,7 +1031,7 @@ result = sorted(str(name) for name in parsed.types)
         release.touch()
         assert retrieve(slow)["result"] == str(sample_a)
         assert retrieve(queued)["result"] == str(sample_a)
-        assert cli("request", human_id, "--wait", "20")["result"] == str(sample_b)
+        assert cli("request", human_id, "--wait", "20")["result"] == str(sample_a)
         assert retrieve(retry)["result"] == "accepted after cancellation"
         assert len(cli("requests")["requests"]) == 5
 
