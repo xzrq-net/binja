@@ -10,6 +10,7 @@ import threading
 import time
 import types
 import unittest
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.modules['binja.targets'] = types.SimpleNamespace(on_ui=lambda f: f())
@@ -116,13 +117,16 @@ class SchedulerTests(unittest.TestCase):
         session_tail = self.submit()
         self.assertNotIn('started', sibling)
         self.assertNotIn('started', session_tail)
-        self.assertIn('started', other)
+        self.assertNotIn('started', other)
         self.assertEqual(e.snapshot(sibling)['waits_behind'], first['id'])
         self.assertEqual(e.snapshot(sibling)['queue_position'], 2)
         self.assertIsNone(e.snapshot(other)['waits_behind'])
         self.assertEqual(e.snapshot(session_tail)['waits_behind'], session['id'])
         self.step(other)
         self.assertEqual(first['status'], 'waiting_analysis')
+        self.assertIn('started', first)
+        self.assertIn('started', other)
+        self.assertNotIn('started', session)
         self.assertEqual(e.snapshot(sibling)['queue_position'], 1)
         # Untargeted requests aren't a barrier and don't wait for parked files.
         self.step(session)
@@ -130,10 +134,58 @@ class SchedulerTests(unittest.TestCase):
         self.step(None)
         self.a.analysis_state = 0
         self.step(first)
-        self.assertIn('started', sibling)
+        self.assertNotIn('started', sibling)
         self.step(sibling)
         self.assertLessEqual(first['finished'], sibling['started'])
         self.assertEqual(first['result'], 42)
+
+    def test_unpicked_lane_head_keeps_accumulating_queue_time(self):
+        e = self.execution
+        with patch.object(execution_module.time, 'time', return_value=100) as clock:
+            running = self.submit(self.a)
+            self.assertIs(e.select(), running)
+            queued = self.submit(self.b)
+            for now in (105, 110):
+                clock.return_value = now
+                snapshot = e.get(queued['id'])
+                self.assertEqual(snapshot['status'], 'queued')
+                self.assertEqual(snapshot['queue_position'], 1)
+                self.assertIsNone(snapshot['waits_behind'])
+                self.assertNotIn('started', snapshot)
+                self.assertEqual(snapshot['queue_wait_seconds'], now - 100)
+                self.assertEqual(snapshot['elapsed_seconds'], now - 100)
+                self.assertIsNone(snapshot['execution_seconds'])
+            cancelled = e.cancel(queued['id'])
+            self.assertIsNone(cancelled['execution_seconds'])
+            self.assertEqual(cancelled['queue_wait_seconds'], 10)
+            self.assertEqual(cancelled['elapsed_seconds'], 10)
+            e.execute(running)
+
+    def test_parked_timing_survives_later_wait_for_executor(self):
+        e = self.execution
+        self.a.analysis_state = 3
+        with patch.object(execution_module.time, 'time', return_value=100) as clock:
+            parked = self.submit(self.a)
+            clock.return_value = 105
+            self.step(None)
+            self.assertEqual(parked['started'], 105)
+            clock.return_value = 106
+            other = self.submit(self.b)
+            self.assertIs(e.select(), other)
+            self.a.analysis_state = 0
+            clock.return_value = 110
+            snapshot = e.get(parked['id'])
+            self.assertEqual(snapshot['queue_wait_seconds'], 5)
+            self.assertEqual(snapshot['execution_seconds'], 5)
+            self.assertEqual(snapshot['elapsed_seconds'], 5)
+            e.execute(other)
+            clock.return_value = 112
+            self.step(parked)
+            snapshot = e.get(parked['id'])
+            self.assertEqual(snapshot['started'], 105)
+            self.assertEqual(snapshot['queue_wait_seconds'], 5)
+            self.assertEqual(snapshot['execution_seconds'], 7)
+            self.assertEqual(snapshot['elapsed_seconds'], 7)
 
     def test_readiness_cancel_wakes_waiters_and_promotes_sibling(self):
         e = self.execution
@@ -198,6 +250,7 @@ class SchedulerTests(unittest.TestCase):
         self.a.analysis_state = 3
         opened = self.open_request(self.a)
         self.step(opened)
+        started = opened['started']
         snapshot = dict(opened['target_snapshot'])
         sibling = self.submit(self.raw, allow_incomplete=True)
         other = self.submit(self.b)
@@ -209,6 +262,7 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(e.snapshot(sibling)['waits_behind'], opened['id'])
         self.a.analysis_state = 0
         self.step(opened)
+        self.assertEqual(opened['started'], started)
         self.assertEqual(opened['result']['analysis'], 0)
         self.assertEqual(opened['target_snapshot'], snapshot)
         self.assertEqual(opened['stdout']['text'], 'load output\n')
@@ -247,13 +301,46 @@ class SchedulerTests(unittest.TestCase):
         self.assertNotIn('_spec', record)
         self.step(None)
 
-    def test_parked_handles_and_readiness_time_handles_are_revalidated(self):
+    def test_parked_handle_revalidation_is_throttled(self):
         e = self.execution
         self.a.analysis_state = 3
         record = self.submit(self.a)
-        self.step(None)
-        del self.views[self.a.handle]
-        self.step(record)
+        with patch.object(execution_module.time, 'monotonic', return_value=10) as clock:
+            # Count UI dispatches, not just resolve calls. Ordinary polls must
+            # stay off the UI thread, while expired parked views still fail.
+            with patch.object(execution_module, 'on_ui', wraps=lambda f: f()) as ui:
+                self.step(None)
+                self.assertEqual(ui.call_count, 1)
+                for now in (10.1, 10.2, 10.3, 10.4, 10.5, 10.6, 10.7, 10.8, 10.9):
+                    clock.return_value = now
+                    self.step(None)
+                self.assertEqual(ui.call_count, 1)
+                clock.return_value = 11
+                self.step(None)
+                self.assertEqual(ui.call_count, 2)
+                del self.views[self.a.handle]
+                clock.return_value = 11.9
+                self.step(None)
+                self.assertEqual(ui.call_count, 2)
+                clock.return_value = 12
+                self.step(record)
+                self.assertEqual(ui.call_count, 3)
+        self.assertIn('handle expired', record['error'])
+        self.assertNotIn('_next_revalidation', record)
+
+    def test_readiness_revalidates_even_before_periodic_check_is_due(self):
+        e = self.execution
+        self.a.analysis_state = 3
+        record = self.submit(self.a)
+        with patch.object(execution_module.time, 'monotonic', return_value=10):
+            self.step(None)
+            e.bridge.targets.resolve = Mock(wraps=self.resolve)
+            self.a.analysis_state = 0
+            self.assertIs(e.select(), record)
+            e.bridge.targets.resolve.assert_not_called()
+            del self.views[self.a.handle]
+            e.execute(record)
+            e.bridge.targets.resolve.assert_called_once_with(self.a.handle)
         self.assertIn('handle expired', record['error'])
         record = self.submit(self.b)
         self.assertIs(e.select(), record)
@@ -271,6 +358,7 @@ class SchedulerTests(unittest.TestCase):
         self.step(None)
         self.assertEqual(record['status'], 'cancelled')
         self.assertNotIn('result', record)
+        self.assertNotIn('_next_revalidation', record)
 
     def test_cancel_during_other_probe_reconsiders_promoted_head(self):
         e = self.execution

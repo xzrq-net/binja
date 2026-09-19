@@ -343,9 +343,11 @@ with the resume error. `--allow-incomplete` does not bypass an earlier request
 in the same lane.
 
 Readiness waits park with status `waiting_analysis`, releasing the executor for
-other lanes. The executor polls readiness every 100 ms when no head can run;
-UI calls use `on_ui` without holding the scheduling lock. Handles are revalidated
-while parked and immediately before execution. Submitted Python and its native
+other lanes. The executor polls analysis state off the UI thread every 100 ms
+when no head can run. Handles are revalidated on the UI thread at first probe,
+about once per second per parked head, and immediately before execution. The
+periodic interval uses a monotonic clock. UI calls use `on_ui` without holding
+the scheduling lock. Submitted Python and its native
 calls still occupy the executor until they return, including any waits the
 script performs itself. Status and request inspection remain available during
 execution, subject to the GUI being responsive.
@@ -381,7 +383,7 @@ so clients can distinguish acceptance and queue placement. Human acceptance
 receipts are useful only when `waits_behind` is non-null; queued status alone
 also describes an idle worker awaiting pickup. Client wait expiry is
 explicit in human and JSON output, with a recovery command; it does not cancel work.
-Elapsed seconds run from becoming a lane head (including readiness) or, for unstarted
+Elapsed seconds run from executor pickup (including readiness) or, for unstarted
 requests, submission. Listings lead with active and queued work and the newest five
 finished records by completion time; `--all` includes all finished metadata.
 
@@ -399,13 +401,14 @@ session does not. A restart cannot establish an earlier outcome.
 The `requests` response is an object with `requests` rows, `finished_total`,
 `finished_shown`, `rejected_total`, and `rejections`. Rows retain kind, filename,
 truncated error, output-pruned flag, target snapshot, phase, and timestamps.
-`started` is set when a request first becomes a lane head.
-`queue_wait_seconds` measures submission to that point, or to now/termination
-for unstarted work. `execution_seconds` measures lane-head time to now/termination,
-including readiness and waiting for another lane's executing script; it is null
-for requests cancelled before reaching a lane head and other unstarted work.
-`elapsed_seconds` uses
-execution time when started, otherwise queue time.
+`started` is set when the executor first probes a request's readiness, whether
+it then executes or parks. `queue_wait_seconds` measures submission to that
+pickup, or to now/termination for unstarted work. A lane head waiting for a busy
+executor remains queued with growing queue time. `execution_seconds` measures
+pickup to now/termination, including parked readiness and subsequent waits for
+the executor; parking never resets `started`. Execution time is null for work
+not yet picked up, including requests cancelled before pickup.
+`elapsed_seconds` uses execution time when started, otherwise queue time.
 
 Cap-rejected attempts are separate from accepted records. A lifetime total counts
 all cap rejections; a ring retains the newest 64 events, oldest first. Each event

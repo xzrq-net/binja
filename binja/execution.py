@@ -19,6 +19,7 @@ KEEP_REJECTIONS = 64
 OUTPUT_BYTES = 1024 * 1024
 RESULT_BYTES = 8 * 1024 * 1024
 INLINE_BYTES = 16 * 1024
+REVALIDATE_SECONDS = 1
 TERMINAL = {"completed", "failed", "cancelled"}
 
 
@@ -213,7 +214,6 @@ class Execution:
                 kind=spec.get("kind", "py"), filename=spec["filename"],
                 _spec=spec, _bv=bv)
             self.records[request_id] = record
-            self.promote_heads()
             self.changed.notify_all()
             return self.snapshot(record)
 
@@ -241,16 +241,17 @@ class Execution:
                 heads.setdefault(self.lane(record), record)
         return list(heads.values())
 
-    def promote_heads(self):
-        for record in self.lane_heads():
-            record.setdefault("started", time.time())
-
     def ready(self, record, bv):
         if bv is None:
             return True
-        # Never hold the scheduling lock while waiting on the UI. Revalidate
-        # parked handles as well: a closed view must fail, not park forever.
-        on_ui(lambda: self.bridge.targets.resolve(record["target_snapshot"]["handle"]))
+        # Poll analysis off the UI thread. Periodically revalidate parked views
+        # so a closed view fails without refreshing every target on every poll.
+        # Never hold the scheduling lock while waiting on the UI.
+        if time.monotonic() >= record.get("_next_revalidation", 0):
+            on_ui(lambda: self.bridge.targets.resolve(record["target_snapshot"]["handle"]))
+            with self.lock:
+                if record["status"] not in TERMINAL:
+                    record["_next_revalidation"] = time.monotonic() + REVALIDATE_SECONDS
         if record["allow_incomplete"] or record["kind"] == "close":
             return True
         state = bv.analysis_state
@@ -273,6 +274,7 @@ class Execution:
             with self.lock:
                 if record["status"] in TERMINAL:
                     continue
+                record.setdefault("started", time.time())
                 bv = record["_bv"]
             error = None
             try:
@@ -293,7 +295,6 @@ class Execution:
         with self.lock:
             record.update(target_snapshot=target, target_snapshot_stage="open",
                 _bv=bv, _open_pending=True)
-            self.promote_heads()
 
     def check_close(self, target, kind, request_id=None):
         # Called under the admission lock; every view of a file shares its fate.
@@ -417,9 +418,8 @@ class Execution:
     def finish(self, record, **outcome):
         # Called under the lock for every terminal transition, including cancel.
         record.update(outcome, finished=time.time())
-        for key in ("phase", "_bv", "_spec", "_open_pending", "_readiness_error"):
+        for key in ("phase", "_bv", "_spec", "_open_pending", "_readiness_error", "_next_revalidation"):
             record.pop(key, None)
-        self.promote_heads()
         self.prune()
         self.changed.notify_all()
 

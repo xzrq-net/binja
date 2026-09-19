@@ -253,6 +253,13 @@ readiness waits, including `open` after loading. Cancelling that wait leaves the
 file open; recover its handle from the request's target snapshot. Running Python
 or native work cannot be interrupted.
 
+`queue_wait_seconds` grows until the executor first probes the request for
+readiness (`started`), even at the front of a file's queue. After that pickup,
+`execution_seconds` includes readiness and any later wait for the executor;
+parking does not restart the clock. `elapsed_seconds` shows queue time before
+pickup and execution time afterward. Cancellation before pickup leaves
+`execution_seconds` null.
+
 After a read timeout or disconnect, inspect the printed ID. An unknown ID does
 not prove the script never ran. Recover with `request ID` or by resubmitting
 with the same `--request-id`, which returns the original record without

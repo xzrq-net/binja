@@ -1523,3 +1523,32 @@ in `src/render.rs` and `src/session.rs`; the changed Rust lines follow rustfmt.
 Logs are in `temp/h8v9cz-{smoke,bridge}.log`, with the initial failure retained
 in `temp/h8v9cz-smoke-initial.log`. Successful live workspaces were
 `/tmp/binja-smoke-ibpmc9sn` and `/tmp/binja-protocol-iw0ffdi9`.
+
+## 2026-09-18 — Executor pickup timing and periodic handle revalidation
+
+Review of `2b48822e` clarified the timing contract in h8v9cz. `started` now
+marks the executor's first readiness probe, restoring pickup semantics. A lane
+head waiting for another lane's script remains queued with growing
+`queue_wait_seconds` and null `execution_seconds`, including if cancelled before
+pickup. Once picked up, a request keeps its original `started` across parking;
+readiness and subsequent waits for the executor count as execution time.
+`elapsed_seconds` uses queue time before pickup and execution time afterward.
+The design, packaged guide, and issue plan reflect this clarification.
+
+Chose the review's suggested throttle for parked-handle revalidation. Analysis
+state still polls off the UI thread every 100 ms. Each head resolves its handle
+on the UI thread at first probe and about once per second thereafter, using a
+monotonic deadline. The immediate pre-execution check remains unconditional,
+so becoming ready within that interval does not bypass handle revalidation.
+Cancellation during the UI call cannot restore a terminal record's deadline.
+
+Verification: `tests/execution.py` passed 21 tests, including fake-clock checks
+for unpicked lane-head timing, cancellation before pickup, unchanged parked
+timestamps, periodic UI-dispatch counts, expired parked handles, and readiness
+within the revalidation interval. `cargo test` passed 10; API-index, framing,
+and update tests passed 5, 5, and 4. `nix build` and the full default installed
+smoke suite passed against `temp/investigation/target`. The smoke regression
+again observed ordered queries on the ready file while the other file was in
+native `AnalyzeState`. Evidence: `temp/h8v9cz-review-smoke.log` and disposable
+workspace `/tmp/binja-smoke-jpfy6859`. The optional desktop phase was not selected;
+no tests in the default suite were skipped.

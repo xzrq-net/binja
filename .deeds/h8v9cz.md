@@ -68,9 +68,11 @@ Decisions:
    satisfied. A head whose analysis is on hold runs and fails with the existing
    resume error.
 3. A lane head whose view is still analyzing is parked with status
-   `waiting_analysis` and stays cancellable. `started` is set when a request
-   becomes a lane head, so `execution_seconds` keeps including readiness and
-   `queue_wait_seconds` keeps meaning time spent behind other requests.
+   `waiting_analysis` and stays cancellable. `started` is set when the executor
+   first probes the request, whether it runs or parks. Queue time includes
+   waiting for executor pickup, even at a lane head; execution time includes
+   readiness and any subsequent wait for the executor. Cancellation before
+   pickup keeps execution time null. (Timing clarified in commit review.)
 4. `open` splits: the script loads, attaches, starts analysis, and records the
    `open`-stage snapshot; the request then parks in its file's lane and
    completes with the readiness-time `describe` result. The `open` result and
@@ -118,3 +120,24 @@ suite rerun successfully. Optional desktop-mode smoke was not selected because
 no desktop display is configured. Repository-wide rustfmt checks still flag
 pre-existing formatting outside the changed lines. Details and evidence paths
 are in the dated investigation-log entry. Issue left open for user review.
+
+### Review follow-up (2026-09-18)
+
+Review of `2b48822e` clarified that `started` means first executor pickup,
+not becoming a lane head. Removed promotion-time timestamps and set `started`
+at the first readiness probe. A head waiting for the executor keeps accumulating
+queue time; cancellation before pickup keeps execution time null. Parking keeps
+the original timestamp, so readiness and later executor waits remain execution
+time. The plan, design, and guide now state those semantics.
+
+Adopted the suggested one-second revalidation interval per parked head, using
+a monotonic clock. The 100 ms analysis-state polls run off the UI thread; the
+first-probe and immediate pre-execution handle checks remain on the UI thread.
+
+Passed 21 execution tests, 10 Rust tests, API-index (5), framing (5), updates
+(4), `nix build`, and the full default installed smoke suite. New unit cases
+verify pickup timing and cancellation, timestamps across parking, periodic UI
+dispatches, and handle revalidation when readiness changes inside the interval.
+The live smoke regression still passed with another file in native analysis.
+Evidence is in `temp/h8v9cz-review-smoke.log` and the dated investigation-log
+entry. Optional desktop smoke was not selected; issue remains open.
